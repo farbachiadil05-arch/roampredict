@@ -163,6 +163,24 @@ def test_waiting_can_be_turned_off():
     assert adapter.connect_calls == [("testnet", AP2)]
 
 
+def test_repeated_errors_are_reported_once_then_the_loop_stops():
+    from roampredict.platform.base import WlanPermissionError
+
+    radio, adapter, engine, tel, store, _ = build(
+        [ScriptedAp(AP1, -60.0)], engine_config=EngineConfig(max_consecutive_errors=8)
+    )
+
+    def denied():
+        raise WlanPermissionError("access denied (Location)")
+
+    adapter.link_status = denied
+    engine.run(duration_s=60.0)
+    errors = kinds(tel, "error")
+    assert len(errors) == 2  # the error once, then "8 errors in a row - stopping"
+    assert "8 errors in a row" in errors[-1]["msg"]
+    assert radio.now() < 5.0  # stopped early instead of spinning for 60 s
+
+
 def test_engine_config_validation():
     with pytest.raises(ValueError):
         EngineConfig(sample_hz=100)

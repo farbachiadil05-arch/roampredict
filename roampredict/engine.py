@@ -158,6 +158,7 @@ class Engine:
         start = self.adapter.now()
         next_tick = start
         errors = 0
+        last_error = ""
         mode = "DRY-RUN" if self.safety.config.dry_run else "ACTIVE"
         self.telemetry.emit("start", f"RoamPredict started ({mode}, {self.config.sample_hz:g} samples/s)", mode=mode)
         self.store.prune_associations(self.wall_clock() - self.config.association_retention_days * 86400)
@@ -166,11 +167,14 @@ class Engine:
                 try:
                     self.tick()
                     errors = 0
+                    last_error = ""
                 except WlanError as exc:
                     errors += 1
-                    self.telemetry.emit("error", f"Wi-Fi API error: {exc}", code=exc.code)
+                    if str(exc) != last_error:  # the same error every tick is reported once
+                        last_error = str(exc)
+                        self.telemetry.emit("error", f"Wi-Fi API error: {exc}", code=exc.code)
                     if errors >= self.config.max_consecutive_errors:
-                        self.telemetry.emit("error", "too many consecutive errors - stopping")
+                        self.telemetry.emit("error", f"{errors} errors in a row - stopping: {last_error}")
                         break
                 now = self.adapter.now()
                 if duration_s is not None and now - start >= duration_s:

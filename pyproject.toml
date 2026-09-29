@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "roampredict"
+version = "0.1.0"
+description = "Predictive Wi-Fi roaming assistant for Windows 10/11, with a simulator"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []  # runtime uses only the standard library (ctypes, sqlite3, tomllib)
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: Microsoft :: Windows :: Windows 10",
+    "Operating System :: Microsoft :: Windows :: Windows 11",
+    "Topic :: System :: Networking",
+]
+
+[project.optional-dependencies]
+sim = ["matplotlib>=3.7"]
+dev = ["pytest>=7.4", "matplotlib>=3.7"]
+
+[project.scripts]
+roampredict = "roampredict.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["roampredict*", "simulator*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

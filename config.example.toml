@@ -1,0 +1,71 @@
+# RoamPredict configuration example.
+#
+# Copy it to %LOCALAPPDATA%\RoamPredict\config.toml and edit.  Every key is
+# optional; missing keys use the defaults shown here.  Unknown keys are errors.
+#
+# There is deliberately NO place for a user name, password or certificate:
+# RoamPredict only uses the NAME of the Windows Wi-Fi profile you already saved.
+
+[safety]
+dry_run = true                    # true = only log what it would do. `roampredict run --active` overrides.
+allowed_ssids = ["eduroam"]       # active mode acts ONLY on these networks (your own campus network)
+allowed_profiles = []             # optional: also require one of these Windows profile names
+deny_bssids = []                  # APs never to switch to, e.g. ["aa:bb:cc:dd:ee:ff"]
+max_roams_per_window = 6          # rate limit: at most this many switches...
+rate_window_s = 600               # ...per 10 minutes
+max_consecutive_failures = 2      # then the kill switch trips by itself
+
+[thresholds]
+roam_threshold_dbm = -75          # the level we want to switch before reaching
+degrade_enter_dbm = -67           # DEGRADING below this (smoothed)
+degrade_exit_dbm = -63            # back to STABLE only above this (hysteresis)
+falling_slope_dbm_s = -1.0        # a trend at least this steep counts as "falling"
+degrade_horizon_s = 10            # DEGRADING if the threshold is predicted within this time
+imminent_lead_s = 4               # ROAM_IMMINENT if the threshold is predicted within this time
+imminent_exit_margin_db = 3       # leave ROAM_IMMINENT only this far above the threshold
+dwell_s = 0.5                     # a worse condition must last this long (ignores single-sample dips)
+recover_dwell_s = 2.0             # a better condition must last this long
+# slope_trigger_margin_db = 12    # optional: ignore slope alarms while still this far above the threshold
+
+[roam]
+min_gain_db = 8                   # candidate must be at least this much stronger (fresh data)
+cooldown_s = 20                   # minimum time between our switches (anti ping-pong)
+failure_cooldown_s = 60
+fresh_scan_max_age_s = 3          # candidate data older than this -> new scan before switching
+scan_timeout_s = 4.5              # Windows requires drivers to finish a scan within 4 s
+degrading_scan_interval_s = 6     # scans cost lag spikes: at most one per 6 s while degrading
+connect_timeout_s = 12
+auth_stall_s = 6                  # stuck in 802.1X this long -> assume a login prompt, stop
+fallback_wait_s = 5               # after a failed switch, give Windows this long to reconnect itself
+l3_wait_s = 4                     # wait this long for the gateway to answer after a switch
+arp_flush = true                  # same subnet after the switch -> flush ARP (needs admin)
+dhcp_renew = true                 # subnet changed -> ipconfig /renew (probably needs admin)
+wait_for_usual_next_ap = true     # wait for the AP you usually go to next while the link still holds
+
+[ranking]
+w_learned = 0.35                  # learned "usual next AP" probability
+w_rssi = 0.35                     # signal strength now
+w_seen = 0.10                     # how recently the AP was heard
+w_recently_connected = 0.20       # associated recently -> a cached key may make the switch fast
+recent_assoc_ttl_hours = 12       # A GUESS. Windows' default PMKCacheTTL is 720 min, but the campus
+                                  # side may forget keys sooner. Check `roampredict report`.
+seen_tau_s = 20
+recently_left_block_s = 45        # do not go straight back to an AP we just left (ping-pong guard)
+min_dwell_learn_s = 10            # learn "A -> B" only after staying on B this long
+
+[signal]
+sample_hz = 4
+smoother = "ema"                  # "ema" or "kalman"
+ema_tau_s = 1.0
+kalman_process_var = 2.0
+kalman_meas_var = 6.0
+spike_threshold_db = 6            # a reading this far from the recent median is a spike...
+spike_confirm = 2                 # ...unless it repeats this many times in a row
+trend_window_s = 3.0              # slope regression window
+trend_min_points = 6
+
+[adapter]
+# interface = "AX211"             # only if you have several Wi-Fi adapters (GUID or part of the name)
+
+[paths]
+# data_dir = "%LOCALAPPDATA%\\RoamPredict"
