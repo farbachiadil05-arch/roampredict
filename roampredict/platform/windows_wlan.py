@@ -504,6 +504,10 @@ class WindowsWlanAdapter(WlanAdapter):
         self._scan_ok = False
         target = w.make_dot11_ssid(ssid) if ssid else None
         rc = self._api.WlanScan(self._handle, byref(self._guid), byref(target) if target is not None else None, None, None)
+        if rc == w.ERROR_BUSY:
+            # Windows is already scanning (seen on a real campus): that scan's
+            # "complete" notification will wake wait_for_scan() just the same.
+            return
         _raise_for(rc, "WlanScan")
 
     def wait_for_scan(self, timeout_s: float) -> bool:

@@ -63,6 +63,14 @@ def test_bss_list_scan_and_events():
     adapter.close()
 
 
+def test_scan_while_windows_is_already_scanning():
+    fake, adapter = make()
+    fake.scan_busy = True  # real campus: WlanScan -> 170 "resource in use"
+    adapter.request_scan("eduroam")  # no error
+    assert adapter.wait_for_scan(2.0)  # the running scan completes
+    adapter.close()
+
+
 def test_missing_location_permission_is_explained():
     fake, adapter = make(bss_denied=True)
     with pytest.raises(WlanPermissionError, match="Location"):

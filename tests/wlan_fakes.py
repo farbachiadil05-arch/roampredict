@@ -62,6 +62,7 @@ class FakeWlanApi:
         self, *, connect_mode: str = "ok", rssi_supported: bool = True, bss_denied: bool = False, rssi_value: int = -63
     ) -> None:
         self.rssi_value = rssi_value
+        self.scan_busy = False  # True: answer like Windows when a scan is already running
         self.keep: list[object] = []
         self.callback = None
         self.guid = w.guid_from_str(GUID)
@@ -197,7 +198,7 @@ class FakeWlanApi:
     def WlanScan(self, handle, pguid, pssid, pie, reserved):  # noqa: N802
         self.scan_calls.append(w.dot11_ssid_bytes(pssid.contents) if pssid else None)
         threading.Timer(0.02, self._fire, args=(w.WLAN_NOTIFICATION_SOURCE_ACM, w.ACM_SCAN_COMPLETE)).start()
-        return 0
+        return w.ERROR_BUSY if self.scan_busy else 0
 
     def WlanConnect(self, handle, pguid, pparams, reserved):  # noqa: N802
         params = pparams.contents
