@@ -11,6 +11,7 @@ from roampredict.net.latency import (
     LatencyStats,
     SocketRegistry,
     TcpPinger,
+    failure_kind,
     bufferbloat_test,
     measure_latency,
 )
@@ -75,7 +76,9 @@ def test_tcp_pinger(server):
     with socket.socket() as s:  # a port nobody listens on
         s.bind(("127.0.0.1", 0))
         closed_port = s.getsockname()[1]
-    assert TcpPinger("127.0.0.1", closed_port, timeout_s=0.5).ping() is None
+    refused = TcpPinger("127.0.0.1", closed_port, timeout_s=0.5)
+    assert refused.ping() is None
+    assert list(refused.failures) == [failure_kind(ConnectionRefusedError())]
     with pytest.raises(ValueError):
         TcpPinger("127.0.0.1", 0)
 
@@ -127,3 +130,11 @@ def test_verdicts():
     assert "moderate" in BufferbloatResult(idle, LatencyStats.from_samples([70.0]), None, None).verdict()
     assert "high" in BufferbloatResult(idle, LatencyStats.from_samples([300.0]), None, None).verdict()
     assert "could not" in BufferbloatResult(idle, LatencyStats.from_samples([None]), None, None).verdict()
+
+
+def test_failure_kinds_are_plain_words():
+    assert failure_kind(socket.timeout()).startswith("timeout")
+    assert failure_kind(socket.gaierror(11001, "getaddrinfo failed")).startswith("name lookup")
+    assert failure_kind(ConnectionRefusedError()).startswith("refused")
+    assert failure_kind(OSError(101, "Network is unreachable")).startswith("network/host unreachable")
+    assert failure_kind(OSError(5, "weird")).startswith("other error")

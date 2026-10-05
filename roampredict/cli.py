@@ -249,7 +249,24 @@ def cmd_latency(args: argparse.Namespace) -> int:
     else:
         stats = measure_latency(pinger, args.seconds)
         print(f"  {stats.describe()}")
+    _explain_losses(pinger)
     return 0
+
+
+def _explain_losses(pinger: object) -> None:
+    failures = getattr(pinger, "failures", None)
+    if not failures:
+        return
+    print("  why probes were lost:")
+    for kind, n in failures.most_common():
+        print(f"    {n:4d} x {kind}")
+    if sum(failures.values()) and "timeout" in failures.most_common(1)[0][0]:
+        print(
+            "  hint: if ALL probes time out, the network probably blocks this address/port "
+            "(campuses often block public DNS servers such as 1.1.1.1). Check it outside RoamPredict:\n"
+            f"    Test-NetConnection {getattr(pinger, 'host', 'HOST')} -Port {getattr(pinger, 'port', 443)}\n"
+            "  and try a target the campus allows, e.g. --target www.microsoft.com --tcp-port 443"
+        )
 
 
 def cmd_kill(args: argparse.Namespace) -> int:

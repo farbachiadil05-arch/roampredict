@@ -117,3 +117,14 @@ def test_latency_command_with_tcp_target(capsys):
         listener.close()
     assert code == 0
     assert "median" in capsys.readouterr().out
+
+
+def test_latency_command_says_why_probes_were_lost(capsys):
+    with socket.socket() as s:  # a port nobody listens on
+        s.bind(("127.0.0.1", 0))
+        closed_port = s.getsockname()[1]
+    code = main(["latency", "--target", "127.0.0.1", "--tcp-port", str(closed_port), "--seconds", "0.3"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "all" in out and "probes lost" in out
+    assert "why probes were lost" in out and "refused" in out

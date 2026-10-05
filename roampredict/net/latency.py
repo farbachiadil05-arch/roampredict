@@ -23,6 +23,7 @@ import ssl
 import statistics
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
@@ -33,6 +34,7 @@ __all__ = [
     "SOCKETS",
     "Pinger",
     "TcpPinger",
+    "failure_kind",
     "IcmpPinger",
     "LatencyStats",
     "measure_latency",
@@ -98,12 +100,14 @@ class TcpPinger:
         self.port = port
         self.timeout_s = timeout_s
         self.description = f"TCP connect to {host}:{port}"
+        self.failures: Counter[str] = Counter()  # why probes were lost, e.g. {"timeout": 12}
 
     def ping(self) -> float | None:
         started = time.perf_counter()
         try:
             sock = socket.create_connection((self.host, self.port), timeout=self.timeout_s)
-        except OSError:
+        except OSError as exc:
+            self.failures[failure_kind(exc)] += 1
             return None
         rtt = (time.perf_counter() - started) * 1000.0
         SOCKETS.register(sock)
@@ -112,6 +116,20 @@ class TcpPinger:
         finally:
             SOCKETS.unregister(sock)
         return rtt
+
+
+def failure_kind(exc: OSError) -> str:
+    """Short, plain reason for a failed TCP connect."""
+    if isinstance(exc, socket.gaierror):
+        return "name lookup failed (DNS)"
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return "timeout (no answer - usually a firewall silently dropping it)"
+    if isinstance(exc, ConnectionRefusedError):
+        return "refused (host reachable, port closed or rejected by a firewall)"
+    # 10051/10065 are WSAENETUNREACH/WSAEHOSTUNREACH; 101/113 their POSIX twins
+    if getattr(exc, "winerror", None) in (10051, 10065) or exc.errno in (101, 113):
+        return "network/host unreachable (no route)"
+    return f"other error: {exc}"
 
 
 class IcmpPinger:
