@@ -448,7 +448,14 @@ class WindowsWlanAdapter(WlanAdapter):
             return None
         if rc != w.ERROR_SUCCESS or len(raw) < 4:
             return None
-        return int.from_bytes(raw[:4], "little", signed=True)
+        value = int.from_bytes(raw[:4], "little", signed=True)
+        if not -110 <= value <= -10:
+            # Seen on a real Intel AX201 (Windows 10): the opcode "works" but
+            # returns e.g. +27.  A real Wi-Fi RSSI is always negative dBm, so
+            # stop trusting this driver's value and use signal quality instead.
+            self._rssi_supported = False
+            return None
+        return value
 
     def _channel(self, bssid: str) -> int | None:
         if self._channel_cache[0] == bssid:

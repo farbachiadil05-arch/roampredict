@@ -39,6 +39,16 @@ def test_rssi_falls_back_to_signal_quality_once():
     adapter.close()
 
 
+def test_implausible_driver_rssi_falls_back_to_quality():
+    # A real Intel AX201 reported +27 "dBm" here; RSSI is always negative.
+    fake, adapter = make(rssi_value=27)
+    link = adapter.link_status()
+    assert link.rssi_source == "quality" and link.rssi_dbm == pytest.approx(74 / 2 - 100)
+    adapter.link_status()
+    assert fake.queries.count(w.wlan_intf_opcode_rssi) == 1  # not trusted again
+    adapter.close()
+
+
 def test_bss_list_scan_and_events():
     fake, adapter = make()
     entries = adapter.bss_list()

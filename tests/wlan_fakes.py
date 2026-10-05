@@ -58,7 +58,10 @@ def build_bss_list(entries: list[dict], declared_count: int | None = None, bad_i
 
 
 class FakeWlanApi:
-    def __init__(self, *, connect_mode: str = "ok", rssi_supported: bool = True, bss_denied: bool = False) -> None:
+    def __init__(
+        self, *, connect_mode: str = "ok", rssi_supported: bool = True, bss_denied: bool = False, rssi_value: int = -63
+    ) -> None:
+        self.rssi_value = rssi_value
         self.keep: list[object] = []
         self.callback = None
         self.guid = w.guid_from_str(GUID)
@@ -167,7 +170,7 @@ class FakeWlanApi:
         elif opcode == w.wlan_intf_opcode_rssi:
             if not self.rssi_supported:
                 return w.ERROR_NOT_SUPPORTED
-            obj = w.LONG(-63)
+            obj = w.LONG(self.rssi_value)
         elif opcode == w.wlan_intf_opcode_channel_number:
             obj = w.ULONG(36)
         else:
