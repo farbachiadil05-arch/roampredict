@@ -27,6 +27,7 @@ in virtual time inside the simulator.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import threading
 import time
@@ -81,6 +82,13 @@ class EngineConfig:
     defer_min_ttt_s: float = 1.5
     link_down_report_s: float = 2.0
     loss_readings: int = 8  # raw readings shown when the link is lost
+    l3_check_interval_s: float = 2.0  # how often the IP address is checked (a change means DHCP was needed)
+    # After every (re)association Windows' signal-quality reading starts high
+    # and settles over ~6 s (seen on a campus with an Intel AX201).  A trend
+    # over those readings looks like a fast fall, so the slope is ignored this
+    # long after a reset when the RSSI comes from signal quality.  Level-based
+    # alarms (e.g. below the roam threshold) keep working.
+    slope_warmup_s: float = 9.0
     prediction_window_s: float = 120.0
     association_retention_days: float = 30.0
     max_consecutive_errors: int = 40
@@ -98,6 +106,7 @@ class EngineConfig:
             "max_roam_gap_s",
             "min_dwell_learn_s",
             "prediction_window_s",
+            "l3_check_interval_s",
         ):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be > 0")
@@ -144,6 +153,9 @@ class Engine:
         self._down_reported = False
         self._loss: dict[str, Any] = {}  # the signal just before the link was lost
         self._recent_raw: deque[float] = deque(maxlen=max(1, self.config.loss_readings))
+        self._signal_reset_at = -math.inf
+        self._l3_checked_at = -math.inf
+        self._l3_last: tuple[str, int | None, str | None] | None = None
         self._bss: list[BssEntry] = []
         self._bss_read_at = -math.inf
         self._scan_requested_at = -math.inf
@@ -251,11 +263,14 @@ class Engine:
         self._down_reported = False
         self._note_association(link.bssid, now)
         self._commit_transition(now)
+        self._maybe_check_l3(now)
 
         self._recent_raw.append(link.rssi_dbm)
         sample = self.filter.update(now, link.rssi_dbm)
         self.trend.add(now, sample.despiked)
         est = self.trend.estimate()
+        if link.rssi_source == "quality" and now - self._signal_reset_at < self.config.slope_warmup_s:
+            est = dataclasses.replace(est, valid=False, significant=False)  # see EngineConfig.slope_warmup_s
         level = est.level_dbm if est.valid else sample.smoothed
         slope = est.slope_dbm_s if est.valid else 0.0
         ttt = time_to_threshold(level, slope, self.sm.config.roam_threshold_dbm)
@@ -547,6 +562,28 @@ class Engine:
         self.filter.reset()
         self.trend.reset()
         self._recent_raw.clear()
+        self._signal_reset_at = self.adapter.now()
+
+    def _maybe_check_l3(self, now: float) -> None:
+        """Log when the IP address, subnet or gateway changes (e.g. after a roam)."""
+        if now - self._l3_checked_at < self.config.l3_check_interval_s:
+            return
+        self._l3_checked_at = now
+        try:
+            snap = self.net.snapshot(self.adapter.interface().guid)
+        except OSError:
+            return
+        if not snap.ipv4:
+            return  # no address yet (DHCP still running): compare once one is there
+        current = (snap.ipv4, snap.prefix_len, snap.gateway)
+        previous, self._l3_last = self._l3_last, current
+        if previous is not None and previous != current:
+            self.telemetry.emit(
+                "ip_change",
+                f"IP address changed: {_describe_l3(previous)} -> {_describe_l3(current)}",
+                before=_describe_l3(previous),
+                after=_describe_l3(current),
+            )
 
     # -- BSS list upkeep ------------------------------------------------------------------
 
@@ -800,3 +837,8 @@ def _describe_loss(loss: dict[str, Any]) -> str:
     estimated = " (estimated)" if loss.get("rssi_source") == "quality" else ""
     readings = " ".join(str(r) for r in loss.get("readings", []))
     return f" - just before: {loss['smoothed']:.1f} dBm{estimated}{trend}, state {loss['state']}; last readings: {readings}"
+
+
+def _describe_l3(l3: tuple[str, int | None, str | None]) -> str:
+    ip, prefix, gateway = l3
+    return f"{ip}{'' if prefix is None else f'/{prefix}'} via {gateway or 'no gateway'}"

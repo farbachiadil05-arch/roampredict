@@ -34,3 +34,13 @@ def test_jsonl_and_ascii_console(tmp_path):
     assert "STATE" in console and "not shown" not in console
     assert tel.counters["state"] == 1
     assert [e["kind"] for e in tel.events()] == ["state", "sample"]
+
+
+def test_probe_and_ip_lines_reach_the_console():
+    out = io.StringIO()
+    tel = Telemetry(None, console=True, stream=out)
+    tel.emit("net_down", "no answer from www.google.com:443 since 15:32:20.3")
+    tel.emit("net_up", "internet answers again after 11.6 s")
+    tel.emit("ip_change", "IP address changed: a -> b")
+    text = out.getvalue()
+    assert "NET_DOWN" in text and "NET_UP" in text and "IP_CHANGE" in text

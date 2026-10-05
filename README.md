@@ -128,8 +128,12 @@ Honest list of what Windows allows and what this program cannot do.
 
 * **Python cannot flush the Wi-Fi driver's queue.** RoamPredict only resets its
   own sockets after a switch and *measures* latency idle vs under load.
-* The driver may not support the dBm RSSI query. Then RSSI is estimated from
-  Windows' signal quality (quality / 2 - 100); trends still work.
+* The driver may not support the dBm RSSI query (an Intel AX201 returned
+  positive nonsense). Then RSSI is estimated from Windows' signal quality
+  (quality / 2 - 100); trends still work. After every roam or reconnect that
+  reading starts high (often exactly -50 dBm) and settles over about 6 s, so
+  RoamPredict ignores the slope for 9 s after each one (`slope_warmup_s`);
+  "already below the threshold" alarms still work during that time.
 * **ARP flush needs admin. `ipconfig /renew` probably does too.** Without admin
   both are skipped and logged; everything else works as a normal user.
 
@@ -348,9 +352,14 @@ roampredict report
   is 802.1X, DHCP and ARP.
 * `Windows reported a failed connection attempt: ...` lines carry Windows' own
   explanation and the reason code.
+* `IP_CHANGE` means the laptop got a new address, subnet or gateway, usually
+  after a roam to a part of the campus with another subnet. Internet outages
+  right before an `IP_CHANGE` are DHCP time.
 * Every outage is stored. `roampredict report` sums them per mode: dry-run is
   Windows alone, active is RoamPredict switching. Walk the same route the same
   number of times in each mode, then compare.
+* `roampredict report --timeline` lists the last outages and roams in time
+  order, for example to see whether each internet outage came with a roam.
 
 **Emergency stop** from any other window: `roampredict kill`. A running
 RoamPredict stops switching within a quarter of a second. `roampredict unkill`

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import sys
 import time
 from collections.abc import Sequence
@@ -28,6 +29,7 @@ from roampredict.safety import KillSwitch
 
 if TYPE_CHECKING:
     from roampredict.net.probe import ConnectivityProbe
+    from roampredict.topology.store import OutageRecord, SwitchRecord
 
 __all__ = ["main", "build_parser"]
 
@@ -47,6 +49,39 @@ def _need_windows(what: str) -> bool:
 
 def _fmt_ms(value: float | None) -> str:
     return "-" if value is None else f"{value:.0f} ms"
+
+
+def _clock(wall: float) -> str:
+    tenths = int((wall % 1) * 10)
+    return f"{time.strftime('%m-%d %H:%M:%S', time.localtime(wall))}.{tenths}"
+
+
+def _timeline(outages: list[OutageRecord], switches: list[SwitchRecord], last: int) -> list[str]:
+    """Outages and switches in time order, so internet losses can be matched with roams."""
+    events: list[tuple[float, str]] = []
+    for o in outages:
+        seconds = o.duration_ms / 1000
+        if o.layer == "internet":
+            text = f"internet  no answer for {seconds:.1f} s (until {_clock(o.started_at + seconds)[6:]})"
+        else:
+            text = f"wifi      link lost for {seconds:.1f} s"
+            if o.last_rssi is not None:
+                text += f", signal before {o.last_rssi:.1f} dBm"
+            text += f"  {o.from_bssid or '?'} -> {o.to_bssid or '(still down)'}"
+        if o.detail.get("ongoing"):
+            text += "  [stopped during it]"
+        events.append((o.started_at, text))
+    for s in switches:
+        who = "Windows" if s.initiator == "windows" else "RoamPredict"
+        timing = "no timing" if s.total_ms is None else f"{s.total_ms:.0f} ms"
+        if s.detail.get("measured") == "link down time":
+            timing += " without Wi-Fi"
+        status = "" if s.success else "  FAILED"
+        events.append(
+            (s.at, f"roam      {who} {s.from_bssid or '?'} -> {s.to_bssid or '?'} ({s.candidate_class or '?'}) {timing}{status}")
+        )
+    events.sort(key=lambda e: e[0])
+    return [f"  {_clock(t)}  {text}" for t, text in events[-last:]]
 
 
 def _parse_host_port(spec: str, default_port: int = 443) -> tuple[str, int]:
@@ -137,6 +172,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     cfg = _load(args)
     if args.active:
         cfg = cfg.with_active(True)
+    if args.verbose:
+        cfg = dataclasses.replace(cfg, engine=dataclasses.replace(cfg.engine, log_samples=True))
     kill = KillSwitch(cfg.paths.kill_file)
     if not cfg.safety.dry_run:
         if not cfg.safety.allowed_ssids:
@@ -216,9 +253,15 @@ def cmd_report(args: argparse.Namespace) -> int:
     since = time.time() - args.days * 86400
     with TopologyStore(cfg.paths.db) as store:
         outage_stats = store.outage_stats(since)
+        outages = store.outages(since=since)
         stats = store.switch_stats(since)
         switches = store.switches(since=since)
         transitions = store.all_transitions(limit=10)
+    if args.timeline:
+        print(f"Timeline: the last {args.timeline} outages and roams, oldest first (times are when each began;")
+        print("roams are listed when Windows finished them)")
+        print("\n".join(_timeline(outages, switches, args.timeline)) or "  nothing recorded yet")
+        return 0
     print(f"Outages, last {args.days:g} days (time without a Wi-Fi link, or without internet answers with --probe)")
     if not outage_stats:
         print("  none recorded yet")
@@ -425,6 +468,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p = add("report", cmd_report, "outages, measured switch times, prediction hits, learned paths")
     p.add_argument("--days", type=float, default=30.0, help="look back this many days (default 30)")
+    p.add_argument(
+        "--timeline",
+        type=int,
+        nargs="?",
+        const=60,
+        metavar="N",
+        help="list the last N outages and roams in time order (default 60) instead of the summary",
+    )
     p = add("simulate", cmd_simulate, "compare strategies in the simulated school (any OS)", config=False)
     p.add_argument("--seeds", type=int, default=10, help="random walks per scenario (default 10)")
     p.add_argument("--scenario", action="append", choices=("walk_out", "corner_seat", "hallway_pass"))

@@ -178,3 +178,43 @@ def test_version_says_which_copy_is_running(capsys):
         main(["--version"])
     out = capsys.readouterr().out
     assert out.startswith("roampredict 0.1.0 (code ") and " in " in out
+
+
+def test_report_timeline_lists_outages_and_roams_in_order(config, capsys):
+    from roampredict.topology.store import OutageRecord
+
+    path, data = config
+    t0 = time.time() - 600
+    with TopologyStore(data / "roampredict.db") as store:
+        store.record_outage(OutageRecord(started_at=t0 + 10, duration_ms=11600, layer="internet", mode="dry-run"))
+        store.record_outage(
+            OutageRecord(
+                started_at=t0 + 50,
+                duration_ms=3300,
+                layer="wifi",
+                mode="dry-run",
+                from_bssid="02:00:00:00:00:01",
+                to_bssid="02:00:00:00:00:02",
+                last_rssi=-79.6,
+            )
+        )
+        store.record_switch(
+            SwitchRecord(
+                at=t0 + 30,
+                initiator="windows",
+                success=True,
+                from_bssid="02:00:00:00:00:03",
+                to_bssid="02:00:00:00:00:01",
+                candidate_class="recent",
+                total_ms=9291,
+                detail={"measured": "driver roam events"},
+            )
+        )
+    assert main(["report", "--config", str(path), "--timeline"]) == 0
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("  ")]
+    assert len(lines) == 3
+    assert "internet  no answer for 11.6 s" in lines[0]
+    assert "roam      Windows 02:00:00:00:00:03 -> 02:00:00:00:00:01 (recent) 9291 ms" in lines[1]
+    assert "wifi      link lost for 3.3 s, signal before -79.6 dBm" in lines[2]
+    assert main(["report", "--config", str(path), "--timeline", "1"]) == 0
+    assert len([line for line in capsys.readouterr().out.splitlines() if line.startswith("  ")]) == 1

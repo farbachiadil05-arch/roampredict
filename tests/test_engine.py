@@ -301,3 +301,47 @@ def test_internet_probe_outages_are_logged_and_stored():
     assert [o.duration_ms for o in internet] == [pytest.approx(7400.0), pytest.approx(1000.0)]
     assert internet[0].detail == {"target": "example.org:443", "lost": 30, "ongoing": False}
     assert "internet lost 2x, 8.4 s in total (longest 7.4 s)" in kinds(tel, "stop")[0]["msg"]
+
+
+def test_ip_changes_are_logged_once_each():
+    from roampredict.platform.base import L3Snapshot
+    from roampredict.platform.mock import DEFAULT_L3
+
+    other = L3Snapshot(7, "Wi-Fi", "10.99.0.5", 24, "10.99.0.1")
+    no_ip = L3Snapshot(7, "Wi-Fi", None, None, None)
+    radio, adapter, engine, tel, store, _ = build([ScriptedAp(AP1, -60.0)], dry_run=True)
+    engine.net = MockNetworkOps(snapshots=[DEFAULT_L3, no_ip, DEFAULT_L3, other])
+    ticks(engine, adapter, 12.0)
+    changes = kinds(tel, "ip_change")
+    assert len(changes) == 1  # "no address yet" in between is not a change
+    assert changes[0]["before"].startswith(DEFAULT_L3.ipv4) and changes[0]["after"] == "10.99.0.5/24 via 10.99.0.1"
+
+
+def _fake_post_roam_ramp(t):
+    """AP2 right after the roam at t=3: reads -50 (the stale "100 %" value) until t=7,
+    then sinks 6 dB/s to its real -62 dBm at t=9 - like Windows' signal quality did."""
+    if t < 7:
+        return -50.0
+    return max(-62.0, -50.0 - 6.0 * (t - 7))
+
+
+@pytest.mark.parametrize("source", ["quality", "rssi"])
+def test_fake_fall_after_a_roam_is_ignored_for_quality_readings(source):
+    import dataclasses
+
+    radio, adapter, engine, tel, store, _ = build([ScriptedAp(AP1, -60.0), ScriptedAp(AP2, _fake_post_roam_ramp)], dry_run=True)
+    real_link = adapter.link_status
+
+    def link_with_source():
+        link = real_link()
+        return dataclasses.replace(link, rssi_source=source) if link.connected else link
+
+    adapter.link_status = link_with_source
+    ticks(engine, adapter, 3.0)
+    radio.current = AP2  # Windows roams
+    ticks(engine, adapter, 12.0)
+    alarms = [e for e in kinds(tel, "state") if e["dst"] in ("ROAM_IMMINENT", "DEGRADING")]
+    if source == "quality":
+        assert alarms == []
+    else:  # real driver RSSI is trusted at once, so the same readings do raise the alarm
+        assert any(e["dst"] == "ROAM_IMMINENT" and "falling fast" in e["msg"] for e in alarms)
