@@ -113,3 +113,24 @@ def test_persistence_and_forget(tmp_path):
         s.forget_all()
         assert s.transition_counts(A) == {}
         assert s.last_association(A) is None
+
+
+def test_outages_round_trip_and_stats(store):
+    from roampredict.topology.store import OutageRecord
+
+    for ms, mode in ((6200, "dry-run"), (33000, "dry-run"), (34000, "dry-run"), (1200, "active")):
+        store.record_outage(OutageRecord(started_at=10.0, duration_ms=ms, layer="wifi", mode=mode, from_bssid=A))
+    store.record_outage(OutageRecord(started_at=11.0, duration_ms=7400, layer="internet", mode="dry-run", detail={"lost": 30}))
+    stats = {(s.layer, s.mode): s for s in store.outage_stats()}
+    dry = stats[("wifi", "dry-run")]
+    assert (dry.n, dry.total_ms, dry.median_ms, dry.longest_ms) == (3, 73200, 33000, 34000)
+    assert stats[("wifi", "active")].n == 1 and stats[("internet", "dry-run")].longest_ms == 7400
+    assert store.outages(since=10.5)[0].detail == {"lost": 30}
+    with pytest.raises(ValidationError):
+        store.record_outage(OutageRecord(started_at=1.0, duration_ms=5, layer="radio", mode="active"))
+    with pytest.raises(ValidationError):
+        store.record_outage(OutageRecord(started_at=1.0, duration_ms=5, layer="wifi", mode="sometimes"))
+    with pytest.raises(ValidationError):
+        store.record_outage(OutageRecord(started_at=1.0, duration_ms=-1, layer="wifi", mode="active"))
+    store.forget_all()
+    assert store.outages() == []

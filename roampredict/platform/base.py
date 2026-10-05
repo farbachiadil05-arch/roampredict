@@ -246,6 +246,10 @@ class WlanAdapter(abc.ABC):
     def poll_events(self) -> list[WlanEvent]:
         """Notifications received since the last call."""
 
+    def reason_text(self, code: int | None) -> str:
+        """Readable text for a WLAN reason code (Windows overrides this with its own wording)."""
+        return "no reason given" if code is None else f"reason 0x{code:x}"
+
     def close(self) -> None:  # noqa: B027 - optional hook
         """Release OS resources."""
 

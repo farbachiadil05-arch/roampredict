@@ -128,3 +128,46 @@ def test_latency_command_says_why_probes_were_lost(capsys):
     assert code == 0
     assert "all" in out and "probes lost" in out
     assert "why probes were lost" in out and "refused" in out
+
+
+def test_host_port_parsing():
+    from roampredict.cli import _parse_host_port
+
+    assert _parse_host_port("www.google.com") == ("www.google.com", 443)
+    assert _parse_host_port("www.google.com:80") == ("www.google.com", 80)
+    assert _parse_host_port("2001:db8::1") == ("2001:db8::1", 443)
+
+
+def test_probe_must_answer_before_the_walk(capsys):
+    from roampredict.cli import _make_probe
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(64)
+    port = listener.getsockname()[1]
+    try:
+        probe = _make_probe(f"127.0.0.1:{port}")
+    finally:
+        listener.close()
+    assert probe is not None and probe.label == f"127.0.0.1:{port}"
+    assert "Internet check: TCP connect to 127.0.0.1" in capsys.readouterr().out
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        closed = s.getsockname()[1]
+    assert _make_probe(f"127.0.0.1:{closed}") is None
+    out = capsys.readouterr().out
+    assert "refused" in out and f"Test-NetConnection 127.0.0.1 -Port {closed}" in out
+    assert _make_probe("bad host") is None
+
+
+def test_report_shows_outages(config, capsys):
+    from roampredict.topology.store import OutageRecord
+
+    path, data = config
+    with TopologyStore(data / "roampredict.db") as store:
+        for ms in (6200, 33000, 34000):
+            store.record_outage(OutageRecord(started_at=time.time(), duration_ms=ms, layer="wifi", mode="dry-run"))
+    assert main(["report", "--config", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "Outages" in out and "dry-run" in out
+    assert "73.2 s" in out and "33.0 s" in out and "34.0 s" in out

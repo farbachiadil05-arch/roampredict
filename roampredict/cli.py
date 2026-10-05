@@ -2,8 +2,9 @@
 
     doctor     check this laptop (read-only)
     scan       list nearby APs of your network with 802.11r/k/v flags (read-only)
-    run        watch the signal; dry-run by default, --active to request switches
-    report     measured switch times (recent vs never-used APs), predictions, learned paths
+    run        watch the signal; dry-run by default, --active to request switches,
+               --probe www.google.com to also time internet outages
+    report     outages, measured switch times (recent vs never-used APs), predictions, learned paths
     simulate   compare strategies in the simulated school (any OS)
     latency    latency idle vs under load (bufferbloat), before/after a switch
     kill       stop all switching now (a running RoamPredict notices within 0.25 s)
@@ -18,10 +19,14 @@ import argparse
 import sys
 import time
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from roampredict import __version__
 from roampredict.config import AppConfig, ConfigError, find_config, load_config
 from roampredict.safety import KillSwitch
+
+if TYPE_CHECKING:
+    from roampredict.net.probe import ConnectivityProbe
 
 __all__ = ["main", "build_parser"]
 
@@ -41,6 +46,42 @@ def _need_windows(what: str) -> bool:
 
 def _fmt_ms(value: float | None) -> str:
     return "-" if value is None else f"{value:.0f} ms"
+
+
+def _parse_host_port(spec: str, default_port: int = 443) -> tuple[str, int]:
+    """``host`` or ``host:port`` (an IPv6 address without a port is left whole)."""
+    host, sep, port = spec.rpartition(":")
+    if sep and host and port.isdigit() and ":" not in host:
+        return host, int(port)
+    return spec, default_port
+
+
+def _make_probe(spec: str) -> ConnectivityProbe | None:
+    """Set up ``run --probe``: the host must answer once before the walk starts."""
+    from roampredict.net.latency import TcpPinger, failure_kind
+    from roampredict.net.probe import ConnectivityProbe
+
+    host, port = _parse_host_port(spec)
+    try:
+        pinger = TcpPinger(host, port)
+        pinger.resolve()
+    except ValueError as exc:
+        print(f"--probe {spec}: {exc}")
+        return None
+    except OSError as exc:
+        print(f"--probe {spec}: {failure_kind(exc)}")
+        return None
+    rtt = pinger.ping()
+    if rtt is None:
+        reason = next(iter(pinger.failures), "no answer")
+        print(
+            f"--probe {spec}: no answer from {pinger.description} ({reason}).\n"
+            f"  Check it outside RoamPredict:  Test-NetConnection {host} -Port {port}\n"
+            "  and use a host that answers there, e.g. --probe www.google.com"
+        )
+        return None
+    print(f"Internet check: {pinger.description} every 0.25 s (first answer in {rtt:.0f} ms; name looked up once)")
+    return ConnectivityProbe(pinger, label=f"{host}:{port}")
 
 
 # -- commands ---------------------------------------------------------------------------------
@@ -105,6 +146,11 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 2
     if not _need_windows("run"):
         return 2
+    probe = None
+    if args.probe:
+        probe = _make_probe(args.probe)
+        if probe is None:
+            return 2
     from roampredict.engine import Engine
     from roampredict.net.l3 import WindowsNetworkOps
     from roampredict.net.latency import SOCKETS
@@ -133,6 +179,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             trend_config=cfg.trend,
             sm_config=cfg.state,
             config=cfg.engine,
+            probe=probe,
         )
         print(f"Log: {cfg.paths.log}   Stop with Ctrl+C.   Emergency stop from another window: roampredict kill")
         try:
@@ -166,9 +213,25 @@ def cmd_report(args: argparse.Namespace) -> int:
         return 0
     since = time.time() - args.days * 86400
     with TopologyStore(cfg.paths.db) as store:
+        outage_stats = store.outage_stats(since)
         stats = store.switch_stats(since)
         switches = store.switches(since=since)
         transitions = store.all_transitions(limit=10)
+    print(f"Outages, last {args.days:g} days (time without a Wi-Fi link, or without internet answers with --probe)")
+    if not outage_stats:
+        print("  none recorded yet")
+    else:
+        print(f"  {'what':<9} {'mode':<8} {'n':>4} {'total':>9} {'median':>9} {'longest':>9}")
+        for o in outage_stats:
+            print(
+                f"  {o.layer:<9} {o.mode:<8} {o.n:>4} {o.total_ms / 1000:>7.1f} s {o.median_ms / 1000:>7.1f} s "
+                f"{o.longest_ms / 1000:>7.1f} s"
+            )
+        print(
+            "\n  How to read it: 'dry-run' rows are Windows alone, 'active' rows are walks where RoamPredict\n"
+            "  could switch. Do the same walk the same number of times in each mode, then compare."
+        )
+    print()
     hours = cfg.predictor.recent_assoc_ttl_s / 3600
     print(f"Switch times, last {args.days} days (real switches only; 'recent' = associated within {hours:g} h)")
     if not stats:
@@ -215,7 +278,13 @@ def cmd_simulate(args: argparse.Namespace) -> int:
 
 
 def cmd_latency(args: argparse.Namespace) -> int:
-    from roampredict.net.latency import IcmpPinger, TcpPinger, bufferbloat_test, measure_latency
+    from roampredict.net.latency import (
+        IcmpPinger,
+        TcpPinger,
+        bufferbloat_test,
+        failure_kind,
+        measure_latency,
+    )
 
     target = args.target
     if target is None:
@@ -230,8 +299,14 @@ def cmd_latency(args: argparse.Namespace) -> int:
         if not target:
             print("No gateway found on the Wi-Fi adapter; pass --target HOST")
             return 2
+    pinger: TcpPinger | IcmpPinger
     if args.tcp_port or sys.platform != "win32":
         pinger = TcpPinger(target, args.tcp_port or 443)
+        try:
+            pinger.resolve()  # once: DNS delays must not count as latency
+        except OSError as exc:
+            print(f"Cannot look up {target}: {failure_kind(exc)}")
+            return 2
     else:
         pinger = IcmpPinger(target)
     print(f"Probing with {pinger.description} every 0.2 s")
@@ -240,6 +315,9 @@ def cmd_latency(args: argparse.Namespace) -> int:
         result = bufferbloat_test(pinger, args.url, idle_s=args.seconds, load_s=args.seconds)
         print(f"  idle:   {result.idle.describe()}")
         print(f"  loaded: {result.loaded.describe()}")
+        for phase, phase_stats in (("idle", result.idle), ("loaded", result.loaded)):
+            if phase_stats.outages:
+                print(f"  {phase} outages: " + "\n    ".join(phase_stats.describe_outages()))
         if result.download_mbps is not None:
             print(f"  download rate: {result.download_mbps:.1f} Mbit/s")
         if result.error:
@@ -249,6 +327,8 @@ def cmd_latency(args: argparse.Namespace) -> int:
     else:
         stats = measure_latency(pinger, args.seconds)
         print(f"  {stats.describe()}")
+        for line in stats.describe_outages():
+            print(f"  {line}")
     _explain_losses(pinger)
     return 0
 
@@ -336,7 +416,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--active", action="store_true", help="really request switches (allow-listed SSIDs only)")
     p.add_argument("--duration", type=float, help="stop after this many seconds")
     p.add_argument("--verbose", action="store_true", help="print every sample")
-    p = add("report", cmd_report, "measured switch times, prediction hits, learned paths")
+    p.add_argument(
+        "--probe",
+        metavar="HOST[:PORT]",
+        help="also time internet outages: TCP connect to this host every 0.25 s (e.g. www.google.com, port 443)",
+    )
+    p = add("report", cmd_report, "outages, measured switch times, prediction hits, learned paths")
     p.add_argument("--days", type=float, default=30.0, help="look back this many days (default 30)")
     p = add("simulate", cmd_simulate, "compare strategies in the simulated school (any OS)", config=False)
     p.add_argument("--seeds", type=int, default=10, help="random walks per scenario (default 10)")

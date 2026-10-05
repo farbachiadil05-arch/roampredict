@@ -186,3 +186,111 @@ def test_engine_config_validation():
         EngineConfig(sample_hz=100)
     with pytest.raises(ValueError):
         EngineConfig(degrading_scan_interval_s=0)
+
+
+def test_link_loss_is_timed_and_stored_with_the_signal_before_it():
+    radio, adapter, engine, tel, store, _ = build([ScriptedAp(AP1, -66.0), ScriptedAp(AP2, -55.0)], dry_run=True)
+    ticks(engine, adapter, 4.0)
+    radio.current = None
+    ticks(engine, adapter, 3.0)
+    radio.current = AP1
+    ticks(engine, adapter, 1.0)
+    down = kinds(tel, "link_down")
+    assert len(down) == 1 and "lost at" in down[0]["msg"]
+    assert "just before: -66.0 dBm" in down[0]["msg"] and down[0]["readings"][-1] == -66
+    back = [e for e in kinds(tel, "connected") if e.get("outage_s") is not None]
+    assert back and back[0]["outage_s"] == pytest.approx(3.0) and "after 3.0 s without Wi-Fi" in back[0]["msg"]
+    [outage] = store.outages()
+    assert outage.layer == "wifi" and outage.mode == "dry-run"
+    assert outage.duration_ms == pytest.approx(3000.0) and outage.started_at == pytest.approx(WALL0 + 4.0)
+    assert outage.last_rssi == pytest.approx(-66.0) and outage.from_bssid == AP1 and outage.to_bssid == AP1
+    assert engine.session_summary() == "Wi-Fi link lost 1x, 3.0 s in total (longest 3.0 s)"
+
+
+def test_a_roam_after_a_gap_reports_the_gap():
+    radio, adapter, engine, tel, store, _ = build([ScriptedAp(AP1, -60.0), ScriptedAp(AP2, -55.0)])
+    ticks(engine, adapter, 3.0)
+    radio.current = None
+    ticks(engine, adapter, 1.5)
+    radio.current = AP2
+    ticks(engine, adapter, 1.0)
+    [roam] = kinds(tel, "windows_roam")
+    assert "after 1.5 s without Wi-Fi" in roam["msg"]
+    windows = [s for s in store.switches() if s.initiator == "windows"]
+    assert windows[0].total_ms == pytest.approx(1500.0) and windows[0].detail["measured"] == "link down time"
+    assert store.outages()[0].to_bssid == AP2
+
+
+def test_stopping_during_an_outage_still_counts_it():
+    radio, adapter, engine, tel, store, _ = build([ScriptedAp(AP1, -60.0)], dry_run=True)
+    engine.run(duration_s=2.0)
+    radio.current = None
+    engine.run(duration_s=3.0)  # the user presses Ctrl+C while still disconnected
+    [outage] = store.outages()
+    assert outage.detail["ongoing"] is True and outage.duration_ms == pytest.approx(3000.0, abs=300)
+    assert "stopped while the Wi-Fi link was down" in kinds(tel, "link_down")[-1]["msg"]
+    assert "Wi-Fi link lost 1x" in kinds(tel, "stop")[-1]["msg"]
+
+
+def test_own_switch_counts_as_an_outage_from_the_request():
+    radio, adapter, engine, tel, store, _ = build([ScriptedAp(AP1, falling), ScriptedAp(AP2, -50.0)])
+    engine.run(duration_s=20.0)
+    assert engine.switches_ok == 1
+    [outage] = store.outages()
+    result = kinds(tel, "switch_result")[0]
+    assert outage.mode == "active" and outage.detail["initiator"] == "roampredict"
+    assert outage.duration_ms == pytest.approx(result["total_ms"]) and outage.to_bssid == AP2
+    assert outage.detail["state"] == "ROAM_IMMINENT"
+
+
+def test_windows_failed_attempts_show_the_reason_code_and_stage():
+    from roampredict.platform.base import WlanEventKind
+
+    radio, adapter, engine, tel, store, _ = build([ScriptedAp(AP1, -60.0)], dry_run=True)
+    radio._emit(WlanEventKind.CONNECTION_FAILED, reason_code=0x4800F)
+    radio._emit(WlanEventKind.CONNECTION_FAILED, reason_code=0x38002)
+    engine.tick()
+    msgs = [e["msg"] for e in kinds(tel, "warning")]
+    assert any("reason 0x4800f" in m and "802.1X/security step" in m for m in msgs)
+    assert any("reason 0x38002" in m and "802.1X" not in m for m in msgs)
+
+
+class FakeProbe:
+    label = "example.org:443"
+
+    def __init__(self, events, final=()):
+        self.events = list(events)
+        self.final = list(final)
+        self.started = False
+
+    def start(self):
+        self.started = True
+
+    def poll(self):
+        out, self.events = self.events, []
+        return out
+
+    def stop(self):
+        return self.final
+
+
+def test_internet_probe_outages_are_logged_and_stored():
+    from roampredict.net.probe import Outage, ProbeEvent
+
+    store = TopologyStore(":memory:")
+    lost = Outage(WALL0 + 1.0, 7.4, 30)
+    probe = FakeProbe(
+        [ProbeEvent("down", Outage(WALL0 + 1.0, 0.5, 2, ongoing=True)), ProbeEvent("up", lost)],
+        final=[ProbeEvent("end", Outage(WALL0 + 9.0, 1.0, 4, ongoing=True))],
+    )
+    radio, adapter, engine, tel, store, _ = build([ScriptedAp(AP1, -60.0)], dry_run=True, store=store)
+    engine.probe = probe
+    engine.run(duration_s=1.0)
+    assert probe.started
+    assert "no answer from example.org:443 since" in kinds(tel, "net_down")[0]["msg"]
+    ups = kinds(tel, "net_up")
+    assert "after 7.4 s" in ups[0]["msg"] and "stopped while the internet was not answering" in ups[1]["msg"]
+    internet = sorted((o for o in store.outages() if o.layer == "internet"), key=lambda o: o.started_at)
+    assert [o.duration_ms for o in internet] == [pytest.approx(7400.0), pytest.approx(1000.0)]
+    assert internet[0].detail == {"target": "example.org:443", "lost": 30, "ongoing": False}
+    assert "internet lost 2x, 8.4 s in total (longest 7.4 s)" in kinds(tel, "stop")[0]["msg"]

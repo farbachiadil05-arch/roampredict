@@ -138,3 +138,53 @@ def test_failure_kinds_are_plain_words():
     assert failure_kind(ConnectionRefusedError()).startswith("refused")
     assert failure_kind(OSError(101, "Network is unreachable")).startswith("network/host unreachable")
     assert failure_kind(OSError(5, "weird")).startswith("other error")
+
+
+def test_tcp_pinger_looks_the_name_up_only_once(server, monkeypatch):
+    port = int(server.rsplit(":", 1)[1])
+    lookups = []
+    real = socket.getaddrinfo
+
+    def counting(*args, **kwargs):
+        lookups.append(args[0])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", counting)
+    pinger = TcpPinger("localhost", port)
+    assert pinger.ping() is not None and pinger.ping() is not None
+    assert lookups == ["localhost"]  # a slow DNS server can no longer inflate the latency
+    assert pinger.address in ("127.0.0.1", "::1") and "localhost (" in pinger.description
+    with pytest.raises(ValueError):
+        TcpPinger("bad host", 443)
+
+
+def test_dns_failure_is_a_lost_probe_not_a_crash(monkeypatch):
+    def no_dns(*args, **kwargs):
+        raise socket.gaierror(11001, "getaddrinfo failed")
+
+    monkeypatch.setattr(socket, "getaddrinfo", no_dns)
+    pinger = TcpPinger("www.example.org", 443)
+    assert pinger.ping() is None
+    assert list(pinger.failures) == ["name lookup failed (DNS)"]
+
+
+def test_measure_latency_reports_outages_with_times():
+    now = [0.0]
+    answers = [True] * 4 + [False] * 10 + [True] * 6
+
+    class Fake:
+        description = "fake"
+
+        def ping(self):
+            now[0] += 0.01
+            return 5.0 if (answers.pop(0) if answers else True) else None
+
+    stats = measure_latency(
+        Fake(), 4.0, 0.2, clock=lambda: now[0], sleep=lambda s: now.__setitem__(0, now[0] + s), wall=lambda: 1e9 + now[0]
+    )
+    assert stats.lost == 10 and len(stats.outages) == 1
+    outage = stats.outages[0]
+    assert outage.lost == 10 and outage.duration_s == pytest.approx(2.01, abs=0.02)
+    lines = stats.describe_outages()
+    assert "2.0 s in 1 outage(s)" in lines[0] and "(10 probes lost)" in lines[1]
+    assert LatencyStats.from_samples([5.0]).describe_outages() == ["no outage (never 2 unanswered probes in a row)"]

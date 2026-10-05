@@ -172,18 +172,24 @@ class RoamStateMachine:
         state = self._state
         if state is RoamState.STABLE:
             if self._imminent.held(t, c.dwell_s):
-                self._go(RoamState.ROAM_IMMINENT, t, "fast drop: " + _describe(snap))
+                self._go(RoamState.ROAM_IMMINENT, t, self._imminent_cause(snap) + ": " + _describe(snap))
             elif self._degrade.held(t, c.dwell_s):
                 self._go(RoamState.DEGRADING, t, _describe(snap))
         elif state is RoamState.DEGRADING:
             if self._imminent.held(t, c.dwell_s):
-                self._go(RoamState.ROAM_IMMINENT, t, _describe(snap))
+                self._go(RoamState.ROAM_IMMINENT, t, self._imminent_cause(snap) + ": " + _describe(snap))
             elif self._recover.held(t, c.recover_dwell_s):
                 self._go(RoamState.STABLE, t, "recovered: " + _describe(snap))
         elif state is RoamState.ROAM_IMMINENT:
             if self._calm.held(t, c.recover_dwell_s):
                 self._go(RoamState.DEGRADING, t, "signal recovered: " + _describe(snap))
         return self._state
+
+    def _imminent_cause(self, snap: SignalSnapshot) -> str:
+        threshold = self.config.roam_threshold_dbm
+        if snap.smoothed_dbm <= threshold:
+            return f"already below {threshold:.0f} dBm"
+        return "falling fast"
 
     def begin_roam(self, t: float) -> None:
         if self._state is not RoamState.ROAM_IMMINENT:

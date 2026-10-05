@@ -9,6 +9,10 @@ Tables:
 * ``transitions``   - how often we went from BSSID A to BSSID B (learned
                       "usual next AP").
 * ``switch_events`` - measured switch timings, ours and Windows' own.
+* ``outages``       - every stretch without a Wi-Fi link (or, with the
+                      internet probe, without an answer from the internet),
+                      tagged with the mode RoamPredict ran in, so walks with
+                      Windows alone can be compared with active walks.
 
 All times are wall-clock UNIX seconds passed in by the caller (the simulator
 passes virtual time).  No credentials of any kind are stored - there is no
@@ -27,7 +31,16 @@ from typing import Any
 
 from roampredict.validate import ValidationError, normalize_bssid
 
-__all__ = ["Sighting", "BssRecord", "SwitchRecord", "SwitchStats", "TopologyStore", "SCHEMA_VERSION"]
+__all__ = [
+    "Sighting",
+    "BssRecord",
+    "SwitchRecord",
+    "SwitchStats",
+    "OutageRecord",
+    "OutageStats",
+    "TopologyStore",
+    "SCHEMA_VERSION",
+]
 
 SCHEMA_VERSION = 1
 
@@ -90,10 +103,24 @@ CREATE TABLE IF NOT EXISTS switch_events (
     detail          TEXT
 );
 CREATE INDEX IF NOT EXISTS switch_at ON switch_events(at);
+CREATE TABLE IF NOT EXISTS outages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at  REAL NOT NULL,
+    duration_ms REAL NOT NULL,
+    layer       TEXT NOT NULL,
+    mode        TEXT NOT NULL,
+    from_bssid  TEXT,
+    to_bssid    TEXT,
+    last_rssi   REAL,
+    detail      TEXT
+);
+CREATE INDEX IF NOT EXISTS outage_at ON outages(started_at);
 """
 
 _INITIATORS = frozenset({"roampredict", "windows"})
 _CLASSES = frozenset({"recent", "expired", "never"})
+_LAYERS = frozenset({"wifi", "internet"})  # no Wi-Fi link / no answer from the internet probe
+_MODES = frozenset({"dry-run", "active"})
 
 
 @dataclass(frozen=True)
@@ -160,6 +187,28 @@ class SwitchStats:
     median_total_ms: float | None
     p90_total_ms: float | None
     median_auth_ms: float | None
+
+
+@dataclass(frozen=True)
+class OutageRecord:
+    started_at: float  # wall clock, when the link (or the answers) stopped
+    duration_ms: float
+    layer: str  # "wifi" or "internet"
+    mode: str  # "dry-run" (Windows alone decides) or "active" (RoamPredict may switch)
+    from_bssid: str | None = None
+    to_bssid: str | None = None
+    last_rssi: float | None = None  # smoothed signal just before a Wi-Fi loss
+    detail: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class OutageStats:
+    layer: str
+    mode: str
+    n: int
+    total_ms: float
+    median_ms: float
+    longest_ms: float
 
 
 def _opt_bool(value: bool | None) -> int | None:
@@ -455,8 +504,67 @@ class TopologyStore:
             )
         return stats
 
+    # -- outages ------------------------------------------------------------------------------
+
+    def record_outage(self, rec: OutageRecord) -> int:
+        if rec.layer not in _LAYERS:
+            raise ValidationError(f"unknown outage layer {rec.layer!r}")
+        if rec.mode not in _MODES:
+            raise ValidationError(f"unknown mode {rec.mode!r}")
+        if not rec.duration_ms >= 0:
+            raise ValidationError("outage duration must be >= 0")
+        with self._conn:
+            cur = self._conn.execute(
+                """
+                INSERT INTO outages(started_at, duration_ms, layer, mode, from_bssid, to_bssid, last_rssi, detail)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    rec.started_at,
+                    rec.duration_ms,
+                    rec.layer,
+                    rec.mode,
+                    _opt_bssid(rec.from_bssid),
+                    _opt_bssid(rec.to_bssid),
+                    rec.last_rssi,
+                    json.dumps(rec.detail, sort_keys=True, default=str),
+                ),
+            )
+        return int(cur.lastrowid or 0)
+
+    def outages(self, since: float | None = None) -> list[OutageRecord]:
+        sql = "SELECT * FROM outages"
+        args: list[Any] = []
+        if since is not None:
+            sql += " WHERE started_at >= ?"
+            args.append(since)
+        sql += " ORDER BY started_at DESC"
+        return [
+            OutageRecord(
+                started_at=r["started_at"],
+                duration_ms=r["duration_ms"],
+                layer=r["layer"],
+                mode=r["mode"],
+                from_bssid=r["from_bssid"],
+                to_bssid=r["to_bssid"],
+                last_rssi=r["last_rssi"],
+                detail=json.loads(r["detail"]) if r["detail"] else {},
+            )
+            for r in self._conn.execute(sql, args).fetchall()
+        ]
+
+    def outage_stats(self, since: float | None = None) -> list[OutageStats]:
+        """Count, total, median and longest outage per layer and mode."""
+        groups: dict[tuple[str, str], list[float]] = {}
+        for rec in self.outages(since=since):
+            groups.setdefault((rec.layer, rec.mode), []).append(rec.duration_ms)
+        return [
+            OutageStats(layer, mode, len(values), sum(values), median(values), max(values))
+            for (layer, mode), values in sorted(groups.items())
+        ]
+
     def forget_all(self) -> None:
         """Delete everything RoamPredict has learned."""
         with self._conn:
-            for table in ("bss", "associations", "transitions", "switch_events"):
+            for table in ("bss", "associations", "transitions", "switch_events", "outages"):
                 self._conn.execute(f"DELETE FROM {table}")  # noqa: S608 - fixed table names

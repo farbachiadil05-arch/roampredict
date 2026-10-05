@@ -16,6 +16,11 @@ One :meth:`Engine.tick` runs about four times per second:
    stronger), then either log what we WOULD do (dry-run, kill switch, rate
    limit...) or switch.
 
+Every stretch without a Wi-Fi link is timed and stored as an outage, with the
+signal just before the loss; with ``run --probe`` the internet probe's
+outages are stored too.  Walks with Windows alone (dry-run) and active walks
+can then be compared with ``roampredict report``.
+
 Time comes from the adapter, so the same code runs in real time on Windows and
 in virtual time inside the simulator.
 """
@@ -25,9 +30,12 @@ from __future__ import annotations
 import math
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
+from roampredict.net.probe import ConnectivityProbe, ProbeEvent, format_clock
 from roampredict.platform.base import (
     BssEntry,
     LinkStatus,
@@ -38,7 +46,7 @@ from roampredict.platform.base import (
     WlanEventKind,
     WlanPermissionError,
 )
-from roampredict.roam.executor import RoamExecutor, Verification
+from roampredict.roam.executor import RoamExecutor, Verification, is_auth_reason
 from roampredict.safety import SafetyGate
 from roampredict.signal.filter import FilterConfig, SignalFilter
 from roampredict.signal.trend import SlidingRegression, TrendConfig, time_to_threshold
@@ -51,7 +59,7 @@ from roampredict.state_machine import (
 )
 from roampredict.telemetry import Telemetry
 from roampredict.topology.predictor import CandidateInput, Predictor, ScoreBreakdown, classify_candidate
-from roampredict.topology.store import Sighting, SwitchRecord, TopologyStore
+from roampredict.topology.store import OutageRecord, Sighting, SwitchRecord, TopologyStore
 
 __all__ = ["EngineConfig", "Engine"]
 
@@ -72,6 +80,7 @@ class EngineConfig:
     learned_min_share: float = 0.6
     defer_min_ttt_s: float = 1.5
     link_down_report_s: float = 2.0
+    loss_readings: int = 8  # raw readings shown when the link is lost
     prediction_window_s: float = 120.0
     association_retention_days: float = 30.0
     max_consecutive_errors: int = 40
@@ -110,6 +119,7 @@ class Engine:
         sm_config: StateMachineConfig | None = None,
         config: EngineConfig | None = None,
         wall_clock: Callable[[], float] = time.time,
+        probe: ConnectivityProbe | None = None,
     ) -> None:
         self.adapter = adapter
         self.net = net
@@ -120,6 +130,7 @@ class Engine:
         self.telemetry = telemetry
         self.config = config or EngineConfig()
         self.wall_clock = wall_clock
+        self.probe = probe
         self.filter = SignalFilter(filter_config)
         self.trend = SlidingRegression(trend_config)
         self.sm = RoamStateMachine(sm_config, on_transition=self._on_transition)
@@ -127,7 +138,10 @@ class Engine:
         self._link: LinkStatus | None = None
         self._last_connected: LinkStatus | None = None
         self._down_since: float | None = None
+        self._down_wall: float | None = None
         self._down_reported = False
+        self._loss: dict[str, Any] = {}  # the signal just before the link was lost
+        self._recent_raw: deque[float] = deque(maxlen=max(1, self.config.loss_readings))
         self._bss: list[BssEntry] = []
         self._bss_read_at = -math.inf
         self._scan_requested_at = -math.inf
@@ -150,6 +164,7 @@ class Engine:
         self.switches_attempted = 0
         self.switches_ok = 0
         self.last_requested_bssid: str | None = None
+        self.session_outages: dict[str, list[float]] = {"wifi": [], "internet": []}  # seconds
 
     # -- main loop -------------------------------------------------------------------
 
@@ -162,6 +177,8 @@ class Engine:
         mode = "DRY-RUN" if self.safety.config.dry_run else "ACTIVE"
         self.telemetry.emit("start", f"RoamPredict started ({mode}, {self.config.sample_hz:g} samples/s)", mode=mode)
         self.store.prune_associations(self.wall_clock() - self.config.association_retention_days * 86400)
+        if self.probe is not None:
+            self.probe.start()
         try:
             while stop is None or not stop.is_set():
                 try:
@@ -186,17 +203,22 @@ class Engine:
                 else:
                     next_tick = now  # fell behind (e.g. during a switch): do not try to catch up
         finally:
+            self._finish_session()
             self.telemetry.emit(
                 "stop",
-                f"RoamPredict stopped ({self.switches_ok}/{self.switches_attempted} switches succeeded)",
+                f"RoamPredict stopped ({self.switches_ok}/{self.switches_attempted} switches succeeded). "
+                f"This session: {self.session_summary()}",
                 attempted=self.switches_attempted,
                 succeeded=self.switches_ok,
+                wifi_outages_s=[round(v, 2) for v in self.session_outages["wifi"]],
+                internet_outages_s=[round(v, 2) for v in self.session_outages["internet"]],
             )
 
     def tick(self) -> None:
         now = self.adapter.now()
         self._check_kill_switch()
         self._handle_events(self.adapter.poll_events())
+        self._handle_probe_events()
         link = self.adapter.link_status()
 
         if not link.connected or link.bssid is None or link.rssi_dbm is None:
@@ -204,23 +226,28 @@ class Engine:
             return
 
         last = self._last_connected
+        # Only a loss we saw happen is an outage (not "disconnected when RoamPredict started").
+        outage_s = None if self._down_since is None or last is None else now - self._down_since
         if last is None:
             self._on_connected(link, first=True)
         elif last.bssid != link.bssid:
-            gap = 0.0 if self._down_since is None else now - self._down_since
-            if last.ssid == link.ssid and gap <= self.config.max_roam_gap_s:
-                self._on_windows_roam(last, link)
+            if last.ssid == link.ssid and (outage_s or 0.0) <= self.config.max_roam_gap_s:
+                self._on_windows_roam(last, link, outage_s)
             else:
-                self._on_connected(link, first=False)
+                self._on_connected(link, first=False, outage_s=outage_s)
         elif self._down_since is not None:
-            self._on_connected(link, first=False)
+            self._on_connected(link, first=False, outage_s=outage_s)
+        if outage_s is not None and last is not None:
+            self._record_wifi_outage(outage_s, last.bssid, link.bssid)
         self._link = link
         self._last_connected = link
         self._down_since = None
+        self._down_wall = None
         self._down_reported = False
         self._note_association(link.bssid, now)
         self._commit_transition(now)
 
+        self._recent_raw.append(link.rssi_dbm)
         sample = self.filter.update(now, link.rssi_dbm)
         self.trend.add(now, sample.despiked)
         est = self.trend.estimate()
@@ -260,28 +287,71 @@ class Engine:
     def _on_disconnected(self, link: LinkStatus, now: float) -> None:
         if self._down_since is None:
             self._down_since = now
+            self._down_wall = self.wall_clock()
+            self._loss = self._loss_context()
             self._reset_signal()
-            self.sm.reset(now, "link down")
+            self.sm.reset(now, "link lost - waiting for Windows to reconnect")
         elif not self._down_reported and now - self._down_since >= self.config.link_down_report_s:
             self._down_reported = True
             prev = self._last_connected
-            self.telemetry.emit("link_down", "Wi-Fi link lost", bssid=None if prev is None else prev.bssid)
+            wall = self._down_wall if self._down_wall is not None else self.wall_clock()
+            self.telemetry.emit(
+                "link_down",
+                f"Wi-Fi link lost at {format_clock(wall)}{_describe_loss(self._loss)}",
+                bssid=None if prev is None else prev.bssid,
+                **self._loss,
+            )
         self._link = link
 
-    def _on_connected(self, link: LinkStatus, *, first: bool) -> None:
+    def _loss_context(self) -> dict[str, Any]:
+        """What the signal looked like just before the link went away (or a switch began)."""
+        snap = self.last_snapshot
+        if not self._recent_raw or snap is None:
+            return {}
+        return {
+            "smoothed": round(snap.smoothed_dbm, 1),
+            "slope": round(snap.trend.slope_dbm_s, 2) if snap.trend.valid else None,
+            "state": self.sm.state.value,
+            "readings": [round(r) for r in self._recent_raw],
+            "rssi_source": None if self._last_connected is None else self._last_connected.rssi_source,
+        }
+
+    def _record_wifi_outage(self, outage_s: float, from_bssid: str | None, to_bssid: str | None) -> None:
+        started = self._down_wall if self._down_wall is not None else self.wall_clock() - outage_s
+        loss, self._loss = self._loss, {}
+        self.session_outages["wifi"].append(outage_s)
+        self.store.record_outage(
+            OutageRecord(
+                started_at=started,
+                duration_ms=outage_s * 1000.0,
+                layer="wifi",
+                mode=self._mode(),
+                from_bssid=from_bssid,
+                to_bssid=to_bssid,
+                last_rssi=loss.get("smoothed"),
+                detail=loss,
+            )
+        )
+
+    def _mode(self) -> str:
+        return "dry-run" if self.safety.config.dry_run else "active"
+
+    def _on_connected(self, link: LinkStatus, *, first: bool, outage_s: float | None = None) -> None:
         wall = self.wall_clock()
         assert link.bssid is not None
         self.store.record_association(link.bssid, link.ssid, wall, "startup" if first else "windows")
+        after = "" if outage_s is None else f" after {outage_s:.1f} s without Wi-Fi"
         self.telemetry.emit(
             "connected",
             f"connected to {link.ssid!r} via {link.bssid} (profile {link.profile_name!r}, "
-            f"{link.rssi_dbm:.0f} dBm, {link.auth or 'unknown security'})",
+            f"{link.rssi_dbm:.0f} dBm, {link.auth or 'unknown security'}){after}",
             ssid=link.ssid,
             bssid=link.bssid,
             profile=link.profile_name,
             rssi=link.rssi_dbm,
             auth=link.auth,
             rssi_source=link.rssi_source,
+            outage_s=None if outage_s is None else round(outage_s, 2),
         )
         if not self.safety.config.dry_run:
             gate = self.safety.link_allowed(link)
@@ -291,7 +361,7 @@ class Engine:
         if not first:
             self.sm.settle(self.adapter.now(), "reconnected")
 
-    def _on_windows_roam(self, prev: LinkStatus, link: LinkStatus) -> None:
+    def _on_windows_roam(self, prev: LinkStatus, link: LinkStatus, outage_s: float | None = None) -> None:
         assert prev.bssid is not None and link.bssid is not None
         now = self.adapter.now()
         wall = self.wall_clock()
@@ -325,6 +395,13 @@ class Engine:
                 )
             self._prediction = None
 
+        total_ms = duration_ms
+        if outage_s is not None:
+            # The link was seen down in between: that gap is what the user felt.
+            total_ms = outage_s * 1000.0
+            detail["measured"] = "link down time"
+        elif duration_ms is not None:
+            detail["measured"] = "driver roam events"
         self.store.record_switch(
             SwitchRecord(
                 at=wall,
@@ -333,12 +410,17 @@ class Engine:
                 from_bssid=prev.bssid,
                 to_bssid=link.bssid,
                 candidate_class=cls,
-                total_ms=duration_ms,
+                total_ms=total_ms,
                 reason="Windows roamed on its own",
                 detail=detail,
             )
         )
-        timing = f" in {duration_ms:.0f} ms" if duration_ms is not None else " (driver did not report roam timing)"
+        if outage_s is not None:
+            timing = f" after {outage_s:.1f} s without Wi-Fi"
+        elif duration_ms is not None:
+            timing = f" in {duration_ms:.0f} ms"
+        else:
+            timing = " (no gap seen; the driver did not report roam timing)"
         self.telemetry.emit(
             "windows_roam",
             f"Windows roamed {prev.bssid} -> {link.bssid} ({cls}){timing}",
@@ -346,6 +428,7 @@ class Engine:
             dst=link.bssid,
             candidate_class=cls,
             duration_ms=duration_ms,
+            outage_s=None if outage_s is None else round(outage_s, 2),
         )
         self._reset_signal()
         self.sm.settle(now, "Windows roamed on its own")
@@ -384,7 +467,65 @@ class Engine:
             elif ev.kind is WlanEventKind.ROAMING_END:
                 self._roaming_end = (ev.t, ev.bssid)
             elif ev.kind is WlanEventKind.CONNECTION_FAILED and not own:
-                self.telemetry.emit("warning", f"Windows reported a failed connection attempt (reason {ev.reason_code})")
+                stage = " - failed in the 802.1X/security step" if is_auth_reason(ev.reason_code) else ""
+                self.telemetry.emit(
+                    "warning",
+                    f"Windows reported a failed connection attempt: {self.adapter.reason_text(ev.reason_code)}{stage}",
+                    reason_code=ev.reason_code,
+                )
+
+    def _handle_probe_events(self) -> None:
+        if self.probe is not None:
+            for ev in self.probe.poll():
+                self._on_probe_event(ev)
+
+    def _on_probe_event(self, ev: ProbeEvent) -> None:
+        o = ev.outage
+        label = "" if self.probe is None else self.probe.label
+        since = format_clock(o.start_wall)
+        if ev.kind == "down":
+            self.telemetry.emit("net_down", f"no answer from {label} since {since}", target=label, since=o.start_wall)
+            return
+        self.session_outages["internet"].append(o.duration_s)
+        self.store.record_outage(
+            OutageRecord(
+                started_at=o.start_wall,
+                duration_ms=o.duration_s * 1000.0,
+                layer="internet",
+                mode=self._mode(),
+                to_bssid=None if self._last_connected is None else self._last_connected.bssid,
+                detail={"target": label, "lost": o.lost, "ongoing": o.ongoing},
+            )
+        )
+        if ev.kind == "up":
+            msg = f"internet answers again after {o.duration_s:.1f} s (no answer since {since}, {o.lost} probes lost)"
+        else:
+            msg = f"stopped while the internet was not answering ({o.duration_s:.1f} s since {since})"
+        self.telemetry.emit("net_up", msg, target=label, outage_s=round(o.duration_s, 2), lost=o.lost)
+
+    def _finish_session(self) -> None:
+        """Count outages still running at the end: stopping mid-outage must not hide one."""
+        if self.probe is not None:
+            for ev in self.probe.stop():
+                self._on_probe_event(ev)
+        if self._down_since is not None and self._last_connected is not None:
+            outage_s = self.adapter.now() - self._down_since
+            self._loss["ongoing"] = True
+            self._record_wifi_outage(outage_s, self._last_connected.bssid, None)
+            self._down_since = None
+            self.telemetry.emit("link_down", f"stopped while the Wi-Fi link was down ({outage_s:.1f} s so far)")
+
+    def session_summary(self) -> str:
+        parts = []
+        for layer, label in (("wifi", "Wi-Fi link"), ("internet", "internet")):
+            if layer == "internet" and self.probe is None:
+                continue
+            values = self.session_outages[layer]
+            if values:
+                parts.append(f"{label} lost {len(values)}x, {sum(values):.1f} s in total (longest {max(values):.1f} s)")
+            else:
+                parts.append(f"{label} never lost")
+        return "; ".join(parts)
 
     def _check_kill_switch(self) -> None:
         active = self.safety.kill_switch.active()
@@ -400,6 +541,7 @@ class Engine:
     def _reset_signal(self) -> None:
         self.filter.reset()
         self.trend.reset()
+        self._recent_raw.clear()
 
     # -- BSS list upkeep ------------------------------------------------------------------
 
@@ -570,6 +712,8 @@ class Engine:
     ) -> None:
         assert link.bssid is not None
         t_start = self.adapter.now()
+        wall_start = self.wall_clock()
+        signal_before = self._loss_context()
         self.telemetry.emit(
             "decision",
             f"switching {link.bssid} -> {best.bssid} ({verification.gain_db:+.1f} dB, score {best.total:.2f}, "
@@ -593,19 +737,31 @@ class Engine:
         self._handle_events(self.adapter.poll_events(), own=True)
 
         new_link = self.adapter.link_status()
+        c = outcome.connect
+        # Our own switches count as outages too, measured from the request - which
+        # can only make RoamPredict look worse, never better, than Windows alone.
+        went_down = c is not None and (c.disconnect_seen or c.final_bssid != link.bssid)
+        if went_down:
+            self._down_wall = wall_start
+            self._loss = {**signal_before, "initiator": "roampredict"}
         if new_link.connected and new_link.bssid is not None:
             if new_link.bssid != link.bssid:
                 self.store.record_association(new_link.bssid, new_link.ssid, wall, "roampredict")
                 self._note_association(new_link.bssid, t_end)
                 self._recently_left[link.bssid] = wall
+            if went_down and c is not None:
+                own_s = c.total_ms / 1000.0 if outcome.success else t_end - t_start
+                self._record_wifi_outage(own_s, link.bssid, new_link.bssid)
             self._last_connected = new_link
             self._down_since = None
+            self._down_wall = None
         else:
-            self._down_since = t_end
+            self._down_since = t_start  # the reconnect by Windows will close this outage
+            if self._down_wall is None:
+                self._down_wall = wall_start
         self._link = new_link
         self._reset_signal()
 
-        c = outcome.connect
         timing = ""
         if c is not None:
             timing = f", connect {c.total_ms:.0f} ms"
@@ -629,3 +785,13 @@ class Engine:
         )
         if self.safety.kill_switch.active():
             self._check_kill_switch()
+
+
+def _describe_loss(loss: dict[str, Any]) -> str:
+    if "smoothed" not in loss:
+        return ""
+    slope = loss.get("slope")
+    trend = "" if slope is None else f", slope {slope:+.1f} dB/s"
+    estimated = " (estimated)" if loss.get("rssi_source") == "quality" else ""
+    readings = " ".join(str(r) for r in loss.get("readings", []))
+    return f" - just before: {loss['smoothed']:.1f} dBm{estimated}{trend}, state {loss['state']}; last readings: {readings}"

@@ -168,3 +168,14 @@ def test_slope_margin_ignores_steps_far_above_threshold():
 def test_config_validation(kwargs):
     with pytest.raises(ValueError):
         StateMachineConfig(**kwargs)
+
+
+def test_imminent_says_why():
+    sm = RoamStateMachine()
+    run(sm, 0.0, 1.0, -78.0)
+    assert sm.state is RoamState.ROAM_IMMINENT
+    assert sm.history[-1].reason.startswith("already below -75 dBm")
+    fast = RoamStateMachine()
+    run(fast, 0.0, 1.0, -62.0, slope=-6.0, falling=True, ttt=2.0)
+    assert fast.state is RoamState.ROAM_IMMINENT
+    assert fast.history[-1].reason.startswith("falling fast")

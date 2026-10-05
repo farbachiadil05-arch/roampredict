@@ -13,6 +13,8 @@ this module does:
 
 Pingers: ICMP through ``IcmpSendEcho`` on Windows (no admin needed), or the
 time of a TCP connect anywhere (useful when a campus network blocks ICMP).
+Stretches without any answer are reported as outages with clock times (see
+:mod:`roampredict.net.probe`), so they can be lined up with the Wi-Fi log.
 """
 
 from __future__ import annotations
@@ -28,6 +30,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import urljoin, urlsplit
+
+from roampredict.net.probe import Outage, OutageTracker
 
 __all__ = [
     "SocketRegistry",
@@ -91,31 +95,64 @@ class Pinger(Protocol):
 
 
 class TcpPinger:
-    """Latency = time to complete a TCP handshake (works where ICMP is blocked)."""
+    """Latency = time to complete a TCP handshake (works where ICMP is blocked).
+
+    The host name is looked up once (see :meth:`resolve`) and that address is
+    used for every probe, so a slow DNS answer never counts as latency or
+    outage, and every probe is limited to ``timeout_s``.
+    """
 
     def __init__(self, host: str, port: int = 443, timeout_s: float = 1.0) -> None:
         if not 0 < port < 65536:
             raise ValueError("port must be 1..65535")
+        if not host or len(host) > 253 or any(ch.isspace() for ch in host):
+            raise ValueError(f"not a valid host name: {host!r}")
         self.host = host
         self.port = port
         self.timeout_s = timeout_s
         self.description = f"TCP connect to {host}:{port}"
         self.failures: Counter[str] = Counter()  # why probes were lost, e.g. {"timeout": 12}
+        self._target: tuple[int, tuple] | None = None  # type: ignore[type-arg]  # (family, sockaddr)
+
+    @property
+    def address(self) -> str | None:
+        return None if self._target is None else str(self._target[1][0])
+
+    def resolve(self) -> str:
+        """Look the host name up (IPv4 preferred) and keep the address; raises OSError."""
+        infos = socket.getaddrinfo(self.host, self.port, type=socket.SOCK_STREAM)
+        if not infos:
+            raise OSError(f"no address found for {self.host}")
+        infos.sort(key=lambda info: info[0] != socket.AF_INET)
+        family, _, _, _, sockaddr = infos[0]
+        self._target = (family, sockaddr)
+        ip = str(sockaddr[0])
+        shown = self.host if ip == self.host else f"{self.host} ({ip})"
+        self.description = f"TCP connect to {shown} port {self.port}"
+        return ip
 
     def ping(self) -> float | None:
-        started = time.perf_counter()
         try:
-            sock = socket.create_connection((self.host, self.port), timeout=self.timeout_s)
+            if self._target is None:
+                self.resolve()
+            assert self._target is not None
+            family, sockaddr = self._target
+            sock = socket.socket(family, socket.SOCK_STREAM)
         except OSError as exc:
             self.failures[failure_kind(exc)] += 1
             return None
-        rtt = (time.perf_counter() - started) * 1000.0
         SOCKETS.register(sock)
         try:
-            sock.close()
+            sock.settimeout(self.timeout_s)
+            started = time.perf_counter()
+            sock.connect(sockaddr)
+            return (time.perf_counter() - started) * 1000.0
+        except OSError as exc:
+            self.failures[failure_kind(exc)] += 1
+            return None
         finally:
             SOCKETS.unregister(sock)
-        return rtt
+            sock.close()
 
 
 def failure_kind(exc: OSError) -> str:
@@ -156,14 +193,25 @@ class LatencyStats:
     median_ms: float | None
     p90_ms: float | None
     max_ms: float | None
+    outages: tuple[Outage, ...] = ()  # 2+ unanswered probes in a row, with clock times
 
     @staticmethod
-    def from_samples(samples: list[float | None]) -> LatencyStats:
+    def from_samples(samples: list[float | None], outages: tuple[Outage, ...] = ()) -> LatencyStats:
         ok = sorted(s for s in samples if s is not None)
         if not ok:
-            return LatencyStats(len(samples), len(samples), None, None, None, None)
+            return LatencyStats(len(samples), len(samples), None, None, None, None, outages)
         p90 = ok[min(len(ok) - 1, int(round(0.9 * (len(ok) - 1))))]
-        return LatencyStats(len(samples), len(samples) - len(ok), ok[0], statistics.median(ok), p90, ok[-1])
+        return LatencyStats(len(samples), len(samples) - len(ok), ok[0], statistics.median(ok), p90, ok[-1], outages)
+
+    def describe_outages(self) -> list[str]:
+        """One line per outage, plus the total - the real time without internet."""
+        if not self.outages:
+            return ["no outage (never 2 unanswered probes in a row)"]
+        total = sum(o.duration_s for o in self.outages)
+        longest = max(o.duration_s for o in self.outages)
+        lines = [f"time without any answer: {total:.1f} s in {len(self.outages)} outage(s), longest {longest:.1f} s"]
+        lines += [f"  {o.describe()}" for o in self.outages]
+        return lines
 
     def describe(self) -> str:
         if self.median_ms is None:
@@ -181,16 +229,22 @@ def measure_latency(
     *,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    wall: Callable[[], float] = time.time,
 ) -> LatencyStats:
     samples: list[float | None] = []
+    tracker = OutageTracker()
     end = clock() + seconds
     while clock() < end:
-        started = clock()
-        samples.append(pinger.ping())
-        remaining = interval_s - (clock() - started)
+        started, started_wall = clock(), wall()
+        rtt = pinger.ping()
+        done = clock()
+        samples.append(rtt)
+        tracker.add(started, started_wall, done, rtt is not None)
+        remaining = interval_s - (done - started)
         if remaining > 0:
             sleep(remaining)
-    return LatencyStats.from_samples(samples)
+    tracker.finish(clock())
+    return LatencyStats.from_samples(samples, tuple(tracker.outages))
 
 
 class DownloadLoad(threading.Thread):

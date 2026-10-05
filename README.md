@@ -305,8 +305,10 @@ New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\RoamPredict" | Out-Null
 Copy-Item config.example.toml "$env:LOCALAPPDATA\RoamPredict\config.toml"
 notepad "$env:LOCALAPPDATA\RoamPredict\config.toml"     # set allowed_ssids = ["eduroam"]
 
-# 4. Dry-run for a few days while you walk around campus (Ctrl+C to stop)
-roampredict run
+# 4. Dry-run for a few days while you walk around campus (Ctrl+C to stop).
+#    --probe also times how long the internet was gone (pick a host that answers:
+#    Test-NetConnection www.google.com -Port 443)
+roampredict run --probe www.google.com
 
 # 5. What happened? Windows' own roam times, dry-run prediction hits, learned paths
 roampredict report
@@ -317,6 +319,31 @@ roampredict run --active
 # 7. Compare again: recent vs never-used APs, RoamPredict vs Windows
 roampredict report
 ```
+
+**What the walk log tells you** (one terminal, one clock; example lines):
+
+```
+14:10:51 NET_DOWN    no answer from www.google.com:443 since 14:10:51.1
+14:10:53 LINK_DOWN   Wi-Fi link lost at 14:10:51.3 - just before: -71.2 dBm (estimated), slope -0.4 dB/s,
+                     state DEGRADING; last readings: -69 -70 -72 -71 -74 -77 -80 -83
+14:10:57 WINDOWS_ROAM Windows roamed bc:..:30 -> bc:..:f0 (recent) after 6.2 s without Wi-Fi
+14:10:58 NET_UP      internet answers again after 7.1 s (no answer since 14:10:51.1, 28 probes lost)
+...
+14:13:30 STOP        RoamPredict stopped (0/0 switches succeeded). This session: Wi-Fi link lost 3x,
+                     73.4 s in total (longest 34.1 s); internet lost 3x, 78.0 s in total (longest 35.2 s)
+```
+
+* `LINK_DOWN` shows the signal just before the loss. If the link dies while
+  the signal is still above the roam threshold, the access point (or driver)
+  dropped you, which no signal-based prediction can foresee. If it was falling
+  through the threshold, earlier action could have helped.
+* The gap between the Wi-Fi link coming back and the internet answering again
+  is 802.1X, DHCP and ARP.
+* `Windows reported a failed connection attempt: ...` lines carry Windows' own
+  explanation and the reason code.
+* Every outage is stored. `roampredict report` sums them per mode: dry-run is
+  Windows alone, active is RoamPredict switching. Walk the same route the same
+  number of times in each mode, then compare.
 
 **Emergency stop** from any other window: `roampredict kill`. A running
 RoamPredict stops switching within a quarter of a second. `roampredict unkill`
@@ -340,8 +367,14 @@ what it learned.
 ```powershell
 roampredict latency                                   # ping the Wi-Fi gateway for 10 s (ICMP)
 roampredict latency --url https://example.org/big.iso # 10 s idle, then 10 s while downloading
-roampredict latency --target 1.1.1.1 --tcp-port 443   # if the campus blocks ICMP
+roampredict latency --target www.google.com --tcp-port 443   # if the campus blocks ICMP
 ```
+
+Some campuses also block public DNS servers such as `1.1.1.1`, so check the
+target first: `Test-NetConnection www.google.com -Port 443` must say
+`TcpTestSucceeded : True`. The host name is looked up once, so DNS delays
+are not counted. Outages (2+ unanswered probes in a row) are listed with
+clock times, which you can line up with the `run` log.
 
 Use a large file you are allowed to download (for example from your campus
 software mirror). Compare the numbers before and after a switch, or at
@@ -354,6 +387,7 @@ measure it.
 |---|---|
 | Does `WlanConnect` drop the link first on your laptop? | RoamPredict's log: `detail.disconnect_seen` and `detail.events` of every switch. Or, in an admin PowerShell: `netsh wlan show wlanreport`, then open `C:\ProgramData\Microsoft\Windows\WlanReport\wlan-report-latest.html` |
 | Does Windows stay "pinned" after a switch? | Stop RoamPredict after an active switch and walk away. If Windows never roams, reconnect: `netsh wlan connect name="eduroam"` |
+| What does a Windows reason code mean? | RoamPredict prints Windows' own text (`WlanReasonCodeToString`) next to the code. For a history of every connect/disconnect with reasons: `netsh wlan show wlanreport` in an admin PowerShell. That report may include your login name, so read it yourself rather than sharing it |
 | Does `ipconfig /renew` need admin? | Run `ipconfig /renew "Wi-Fi"` in a normal PowerShell |
 | ARP flush command options | `netsh interface ip delete arpcache /?` (RoamPredict uses `FlushIpNetTable2` for the Wi-Fi interface and falls back to this command) |
 | Does netsh show 802.11r? | `netsh wlan show networks mode=bssid`. I don't think most builds show it; `roampredict scan` parses it from the information elements instead |
