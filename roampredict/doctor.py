@@ -250,7 +250,7 @@ def _check_windows_wifi(settings: DoctorSettings) -> list[Check]:
                         checks.append(Check("Gateway ping", "OK", f"{snap.gateway} replied in {ping.rtt_ms:.0f} ms"))
                     else:
                         checks.append(
-                            Check("Gateway ping", "WARN", f"no reply from {snap.gateway} ({ping.error})", "some campuses block ICMP; switch checks will then fail")
+                            Check("Gateway ping", "WARN", f"no reply from {snap.gateway} ({ping.error})", "some campuses block ping; RoamPredict then checks the IP address after a switch instead")
                         )
                 else:
                     checks.append(Check("IP configuration", "WARN", "no usable IPv4 address/gateway on the Wi-Fi adapter"))

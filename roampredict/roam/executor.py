@@ -197,6 +197,7 @@ class RoamExecutor:
         self.telemetry = telemetry
         self.reset_sockets = reset_sockets
         self._last_scan_done: float | None = None
+        self._gateway_pingable: bool | None = None  # learned before the first switch
         self._guid = adapter.interface().guid
 
     def note_scan_complete(self, t: float) -> None:
@@ -283,6 +284,10 @@ class RoamExecutor:
             verification=verification,
         )
         out.l3_before = self._snapshot()
+        if self._gateway_pingable is None and out.l3_before is not None and out.l3_before.gateway:
+            # Learn once, while the old link still works, whether ping can be used
+            # to check the gateway after a switch.
+            self._gateway_pingable = self.net.ping(out.l3_before.gateway, cfg.ping_timeout_ms).ok
         result = self.adapter.connect_bssid(
             link.profile_name,
             link.ssid,
@@ -402,6 +407,15 @@ class RoamExecutor:
             out.reason = "no gateway after the switch"
             out.l3_ms = (self.adapter.now() - t0) * 1000.0
             return False
+        if self._gateway_pingable is False:
+            # The gateway ignored ping before the switch too (many campuses block
+            # ICMP), so a missing reply proves nothing: check the address instead.
+            out.extra["gateway_check"] = "skipped: the gateway does not answer ping on this network"
+            out.l3_ms = (self.adapter.now() - t0) * 1000.0
+            if after is None or not after.usable:
+                out.reason = "no usable IP address after the switch"
+                return False
+            return True
         ping = self._ping_until(gateway, cfg.l3_wait_s)
         if not ping.ok and out.dhcp is None and cfg.dhcp_renew and after is not None:
             out.dhcp = self.net.renew_dhcp(after)

@@ -162,8 +162,17 @@ def test_driver_choosing_another_ap_is_reported():
     assert "instead of" in out.reason
 
 
+def test_campus_that_blocks_ping_is_checked_by_ip_address():
+    net = MockNetworkOps(ping_ok=False)  # the gateway never answers ping, not even before
+    radio, adapter, net, ex = setup(net=net)
+    out = ex.switch(link=link(adapter), candidate=candidate(), verification=verified(ex, adapter))
+    assert out.success and out.stage == "done"
+    assert "does not answer ping" in out.extra["gateway_check"]
+    assert "renew_dhcp" not in net.calls
+
+
 def test_no_gateway_reply_is_a_failure_after_trying_dhcp():
-    net = MockNetworkOps(ping_ok=False)
+    net = MockNetworkOps(ping_ok=[True, False])  # answered before the switch, silent after
     radio, adapter, net, ex = setup(net=net)
     out = ex.switch(link=link(adapter), candidate=candidate(), verification=verified(ex, adapter))
     assert not out.success and out.stage == "l3"
