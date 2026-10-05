@@ -171,3 +171,10 @@ def test_report_shows_outages(config, capsys):
     out = capsys.readouterr().out
     assert "Outages" in out and "dry-run" in out
     assert "73.2 s" in out and "33.0 s" in out and "34.0 s" in out
+
+
+def test_version_says_which_copy_is_running(capsys):
+    with pytest.raises(SystemExit):
+        main(["--version"])
+    out = capsys.readouterr().out
+    assert out.startswith("roampredict 0.1.0 (code ") and " in " in out

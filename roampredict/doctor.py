@@ -277,8 +277,14 @@ def _check_windows_wifi(settings: DoctorSettings) -> list[Check]:
     return checks
 
 
+def _check_code() -> Check:
+    from roampredict.buildinfo import code_identity
+
+    return Check("RoamPredict code", "INFO", code_identity().removeprefix("code "))
+
+
 def run_doctor(settings: DoctorSettings) -> list[Check]:
-    checks = [_check_python(), _check_os()]
+    checks = [_check_code(), _check_python(), _check_os()]
     if sys.platform == "win32":
         checks.append(_check_admin())
         checks += _check_windows_wifi(settings)

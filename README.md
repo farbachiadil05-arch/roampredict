@@ -215,6 +215,13 @@ skip activation and call `.\.venv\Scripts\roampredict.exe` directly.
 The runtime needs only the Python standard library. `matplotlib` (in `[dev]`
 and `[sim]`) is only for the simulator plot.
 
+Without installing, `python -m roampredict <command>` works from the project
+folder. **After every `git pull`, check which copy runs:**
+`python -m roampredict --version` prints the commit and the folder, for
+example `roampredict 0.1.0 (code 4b8e73c in C:\...\python-debana)`. The
+`run` start line and `doctor` show the same. With two clones on one laptop it
+is easy to pull one and run the other.
+
 ## Run the simulation
 
 No Wi-Fi hardware needed; this works on any OS.

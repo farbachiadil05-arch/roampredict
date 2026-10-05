@@ -14,6 +14,7 @@ def test_doctor_runs_without_windows(tmp_path):
     assert by["Wi-Fi checks"].status == "SKIP"
     assert by["Data folder"].status == "OK"
     assert by["Kill switch"].status == "OK"
+    assert by["RoamPredict code"].status == "INFO" and " in " in by["RoamPredict code"].detail
     text = format_checks(checks)
     text.encode("ascii")
     assert "0 problem(s)" in text

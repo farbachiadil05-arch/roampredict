@@ -66,6 +66,13 @@ def kinds(tel, kind):
     return [e for e in tel.events() if e["kind"] == kind]
 
 
+def test_start_line_names_the_code_that_ran():
+    radio, adapter, engine, tel, store, _ = build([ScriptedAp(AP1, -60.0)], dry_run=True)
+    engine.build_info = "code 1234abc in C:\\work\\python-debana"
+    engine.run(duration_s=0.5)
+    assert kinds(tel, "start")[0]["msg"].endswith("4 samples/s, code 1234abc in C:\\work\\python-debana)")
+
+
 def test_active_mode_switches_before_the_signal_crosses_the_threshold():
     radio, adapter, engine, tel, store, times = build([ScriptedAp(AP1, falling), ScriptedAp(AP2, -50.0)])
     engine.run(duration_s=20.0)

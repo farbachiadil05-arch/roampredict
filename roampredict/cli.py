@@ -22,6 +22,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from roampredict import __version__
+from roampredict.buildinfo import code_identity
 from roampredict.config import AppConfig, ConfigError, find_config, load_config
 from roampredict.safety import KillSwitch
 
@@ -180,6 +181,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             sm_config=cfg.state,
             config=cfg.engine,
             probe=probe,
+            build_info=code_identity(),
         )
         print(f"Log: {cfg.paths.log}   Stop with Ctrl+C.   Emergency stop from another window: roampredict kill")
         try:
@@ -396,7 +398,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="roampredict",
         description="Predictive Wi-Fi roaming assistant for Windows 10/11 (dry-run by default).",
     )
-    parser.add_argument("--version", action="version", version=f"roampredict {__version__}")
+    parser.add_argument("--version", action="version", version=f"roampredict {__version__} ({code_identity()})")
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add(name: str, func, help_text: str, *, config: bool = True, interface: bool = False) -> argparse.ArgumentParser:  # type: ignore[no-untyped-def]

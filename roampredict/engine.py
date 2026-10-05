@@ -120,6 +120,7 @@ class Engine:
         config: EngineConfig | None = None,
         wall_clock: Callable[[], float] = time.time,
         probe: ConnectivityProbe | None = None,
+        build_info: str = "",
     ) -> None:
         self.adapter = adapter
         self.net = net
@@ -131,6 +132,7 @@ class Engine:
         self.config = config or EngineConfig()
         self.wall_clock = wall_clock
         self.probe = probe
+        self.build_info = build_info  # shown in the start line, so a pasted log says which code ran
         self.filter = SignalFilter(filter_config)
         self.trend = SlidingRegression(trend_config)
         self.sm = RoamStateMachine(sm_config, on_transition=self._on_transition)
@@ -175,7 +177,10 @@ class Engine:
         errors = 0
         last_error = ""
         mode = "DRY-RUN" if self.safety.config.dry_run else "ACTIVE"
-        self.telemetry.emit("start", f"RoamPredict started ({mode}, {self.config.sample_hz:g} samples/s)", mode=mode)
+        build = f", {self.build_info}" if self.build_info else ""
+        self.telemetry.emit(
+            "start", f"RoamPredict started ({mode}, {self.config.sample_hz:g} samples/s{build})", mode=mode, build=self.build_info
+        )
         self.store.prune_associations(self.wall_clock() - self.config.association_retention_days * 86400)
         if self.probe is not None:
             self.probe.start()
