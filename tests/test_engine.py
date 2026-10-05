@@ -211,7 +211,7 @@ def test_link_loss_is_timed_and_stored_with_the_signal_before_it():
     assert outage.layer == "wifi" and outage.mode == "dry-run"
     assert outage.duration_ms == pytest.approx(3000.0) and outage.started_at == pytest.approx(WALL0 + 4.0)
     assert outage.last_rssi == pytest.approx(-66.0) and outage.from_bssid == AP1 and outage.to_bssid == AP1
-    assert engine.session_summary() == "Wi-Fi link lost 1x, 3.0 s in total (longest 3.0 s)"
+    assert engine.session_summary() == "Wi-Fi link lost 1x, 3.0 s in total (longest 3.0 s); Windows did not roam"
 
 
 def test_a_roam_after_a_gap_reports_the_gap():
@@ -223,6 +223,7 @@ def test_a_roam_after_a_gap_reports_the_gap():
     ticks(engine, adapter, 1.0)
     [roam] = kinds(tel, "windows_roam")
     assert "after 1.5 s without Wi-Fi" in roam["msg"]
+    assert engine.session_summary().endswith("; Windows roamed 1x")
     windows = [s for s in store.switches() if s.initiator == "windows"]
     assert windows[0].total_ms == pytest.approx(1500.0) and windows[0].detail["measured"] == "link down time"
     assert store.outages()[0].to_bssid == AP2

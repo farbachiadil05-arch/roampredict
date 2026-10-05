@@ -179,6 +179,7 @@ class Engine:
         self.switches_ok = 0
         self.last_requested_bssid: str | None = None
         self.session_outages: dict[str, list[float]] = {"wifi": [], "internet": []}  # seconds
+        self.session_windows_roams = 0
 
     # -- main loop -------------------------------------------------------------------
 
@@ -229,6 +230,7 @@ class Engine:
                 succeeded=self.switches_ok,
                 wifi_outages_s=[round(v, 2) for v in self.session_outages["wifi"]],
                 internet_outages_s=[round(v, 2) for v in self.session_outages["internet"]],
+                windows_roams=self.session_windows_roams,
             )
 
     def tick(self) -> None:
@@ -392,6 +394,7 @@ class Engine:
                 duration_ms = (end_t - self._roaming_start) * 1000.0
         self._roaming_start = None
         self._roaming_end = None
+        self.session_windows_roams += 1
 
         last_assoc = self.store.last_association(link.bssid)
         cls = classify_candidate(
@@ -545,6 +548,8 @@ class Engine:
                 parts.append(f"{label} lost {len(values)}x, {sum(values):.1f} s in total (longest {max(values):.1f} s)")
             else:
                 parts.append(f"{label} never lost")
+        n = self.session_windows_roams
+        parts.append(f"Windows roamed {n}x" if n else "Windows did not roam")
         return "; ".join(parts)
 
     def _check_kill_switch(self) -> None:
