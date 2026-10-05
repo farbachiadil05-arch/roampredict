@@ -346,3 +346,26 @@ def test_fake_fall_after_a_roam_is_ignored_for_quality_readings(source):
         assert alarms == []
     else:  # real driver RSSI is trusted at once, so the same readings do raise the alarm
         assert any(e["dst"] == "ROAM_IMMINENT" and "falling fast" in e["msg"] for e in alarms)
+
+
+def test_moving_to_another_network_teaches_no_roam():
+    aps = [ScriptedAp(AP1, -60.0), ScriptedAp(AP2, -55.0, ssid="cafe"), ScriptedAp(AP3, -58.0)]
+    radio, adapter, engine, tel, store, _ = build(aps, dry_run=True)
+    ticks(engine, adapter, 12.0)  # a real stay on AP1 (testnet)
+    radio.current = AP2  # Windows falls back to another saved network
+    ticks(engine, adapter, 12.0)
+    radio.current = AP3  # and later back to testnet
+    ticks(engine, adapter, 12.0)
+    assert store.transition_counts(AP1) == {} and store.transition_counts(AP2) == {}
+
+
+def test_self_assigned_address_is_explained():
+    from roampredict.platform.base import L3Snapshot
+    from roampredict.platform.mock import DEFAULT_L3
+
+    apipa = L3Snapshot(7, "Wi-Fi", "169.254.180.174", 16, None)
+    radio, adapter, engine, tel, store, _ = build([ScriptedAp(AP1, -60.0)], dry_run=True)
+    engine.net = MockNetworkOps(snapshots=[DEFAULT_L3, apipa])
+    ticks(engine, adapter, 5.0)
+    [change] = kinds(tel, "ip_change")
+    assert "169.254.180.174/16 via no gateway (self-assigned: DHCP did not answer, so no internet)" in change["msg"]

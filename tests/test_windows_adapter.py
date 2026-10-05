@@ -139,3 +139,23 @@ def test_profiles_interfaces_and_selection():
     with pytest.raises(WlanUnavailableError):
         WindowsWlanAdapter("no-such-adapter", api=_WlanApi(other.dll()))
     assert other.closed  # cleaned up after the failed start
+
+
+def test_large_windows_error_codes_do_not_crash(monkeypatch):
+    import ctypes
+
+    from roampredict.platform import windows_wlan
+    from roampredict.platform.base import WlanError
+
+    def c_long_format_error(code):  # like ctypes.FormatError on Windows: a C long only
+        if not -(2**31) <= code < 2**31:
+            raise OverflowError("Python int too large to convert to C long")
+        return f"text for 0x{code & 0xFFFFFFFF:08X}"
+
+    monkeypatch.setattr(ctypes, "FormatError", c_long_format_error, raising=False)
+    assert windows_wlan._error_text(0x80342003) == "text for 0x80342003"
+    fake, adapter = make()
+    fake.scan_rc = 0x80342003  # an NDIS code above 0x7FFFFFFF (crashed a campus walk)
+    with pytest.raises(WlanError, match="code 0x80342003"):
+        adapter.request_scan("B4")
+    adapter.close()

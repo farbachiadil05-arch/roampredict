@@ -168,6 +168,7 @@ class Engine:
         self._prediction: tuple[str, str, float] | None = None  # (from, predicted, monotonic t)
         self._assoc_bssid: str | None = None
         self._assoc_since: float | None = None
+        self._assoc_ssid: str | None = None
         self._anchor: str | None = None  # last AP we really stayed on
         self._pending_transition: tuple[str, str, float] | None = None
         self._roaming_start: float | None = None
@@ -263,7 +264,7 @@ class Engine:
         self._down_since = None
         self._down_wall = None
         self._down_reported = False
-        self._note_association(link.bssid, now)
+        self._note_association(link.bssid, link.ssid, now)
         self._commit_transition(now)
         self._maybe_check_l3(now)
 
@@ -401,7 +402,7 @@ class Engine:
             None if last_assoc is None else wall - last_assoc, self.predictor.config.recent_assoc_ttl_s
         )
         self.store.record_association(link.bssid, link.ssid, wall, "windows")
-        self._note_association(link.bssid, now)
+        self._note_association(link.bssid, link.ssid, now)
         self._recently_left[prev.bssid] = wall
 
         detail: dict[str, object] = {}
@@ -456,18 +457,21 @@ class Engine:
         self._reset_signal()
         self.sm.settle(now, "Windows roamed on its own")
 
-    def _note_association(self, bssid: str, now: float) -> None:
+    def _note_association(self, bssid: str, ssid: str | None, now: float) -> None:
         """Track where we stay.  A brief visit (shorter than ``min_dwell_learn_s``)
-        is skipped when learning, so a detour A -> B (3 s) -> C teaches "A -> C"."""
+        is skipped when learning, so a detour A -> B (3 s) -> C teaches "A -> C".
+        Moving to another network (another SSID) is not a roam and teaches nothing."""
         prev, since = self._assoc_bssid, self._assoc_since
         if prev == bssid:
             return
-        if prev is not None and since is not None and now - since >= self.config.min_dwell_learn_s:
+        if ssid != self._assoc_ssid:
+            self._anchor = None
+        elif prev is not None and since is not None and now - since >= self.config.min_dwell_learn_s:
             self._anchor = prev
         self._pending_transition = None
         if self._anchor is not None and self._anchor != bssid:
             self._pending_transition = (self._anchor, bssid, now)
-        self._assoc_bssid, self._assoc_since = bssid, now
+        self._assoc_bssid, self._assoc_since, self._assoc_ssid = bssid, now, ssid
 
     def _commit_transition(self, now: float) -> None:
         if self._pending_transition is None:
@@ -794,7 +798,7 @@ class Engine:
         if new_link.connected and new_link.bssid is not None:
             if new_link.bssid != link.bssid:
                 self.store.record_association(new_link.bssid, new_link.ssid, wall, "roampredict")
-                self._note_association(new_link.bssid, t_end)
+                self._note_association(new_link.bssid, new_link.ssid, t_end)
                 self._recently_left[link.bssid] = wall
             if went_down and c is not None:
                 own_s = c.total_ms / 1000.0 if outcome.success else t_end - t_start
@@ -846,4 +850,7 @@ def _describe_loss(loss: dict[str, Any]) -> str:
 
 def _describe_l3(l3: tuple[str, int | None, str | None]) -> str:
     ip, prefix, gateway = l3
-    return f"{ip}{'' if prefix is None else f'/{prefix}'} via {gateway or 'no gateway'}"
+    text = f"{ip}{'' if prefix is None else f'/{prefix}'} via {gateway or 'no gateway'}"
+    if ip.startswith("169.254."):
+        text += " (self-assigned: DHCP did not answer, so no internet)"
+    return text

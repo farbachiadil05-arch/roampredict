@@ -233,10 +233,17 @@ class _WlanApi:
 
 
 def _error_text(code: int) -> str:
+    # FormatError takes a C long, but NDIS/WLAN codes such as 0x80342003 are
+    # above 0x7FFFFFFF (a campus walk crashed here): pass the same 32 bits signed.
+    signed = code - (1 << 32) if code >= (1 << 31) else code
     try:
-        return ctypes.FormatError(code).strip()  # type: ignore[attr-defined]
-    except (AttributeError, ValueError):
-        return f"error {code}"
+        return ctypes.FormatError(signed).strip()  # type: ignore[attr-defined]
+    except (AttributeError, ValueError, OverflowError):
+        return "unknown error"
+
+
+def _code(rc: int) -> str:
+    return f"code {rc}" if rc <= 0xFFFF else f"code 0x{rc:08X}"
 
 
 def _raise_for(rc: int, what: str) -> None:
@@ -248,7 +255,7 @@ def _raise_for(rc: int, what: str) -> None:
         raise WlanUnavailableError(f"{what}: the WLAN AutoConfig service is not running (Start-Service WlanSvc)", rc)
     if rc == w.ERROR_NDIS_DOT11_POWER_STATE_INVALID:
         raise WlanUnavailableError(f"{what}: the Wi-Fi radio is switched off", rc)
-    raise WlanError(f"{what} failed: {_error_text(rc)} (code {rc})", rc)
+    raise WlanError(f"{what} failed: {_error_text(rc)} ({_code(rc)})", rc)
 
 
 def _open(api: _WlanApi) -> tuple[w.HANDLE, int]:
@@ -550,7 +557,7 @@ class WindowsWlanAdapter(WlanAdapter):
                 connected=False,
                 final_bssid=None,
                 total_ms=(time.monotonic() - t0) * 1000.0,
-                failure_reason=f"WlanConnect refused the request: {_error_text(rc)} (code {rc})",
+                failure_reason=f"WlanConnect refused the request: {_error_text(rc)} ({_code(rc)})",
             )
 
         done: WlanEvent | None = None
