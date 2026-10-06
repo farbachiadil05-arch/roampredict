@@ -153,9 +153,12 @@ Honest list of what Windows allows and what this program cannot do.
 **About this code**
 
 * **Real hardware so far: one laptop (Intel AX201, Windows 10) on one campus
-  network, in dry-run.** That found and fixed several problems (nonsense RSSI
+  network.** Dry-run walks found and fixed several problems (nonsense RSSI
   from the driver, blocked gateway ping, "scan already running", a crash on
-  large error codes). Active switching has not run on real hardware yet. The
+  large error codes, a signal reading that freezes while the link is dead).
+  The first active walk made 2 switches: 1 succeeded (connect 3.5 s, internet
+  back 6.6 s after it died), 1 failed (reason 0x38001) and Windows took over.
+  That is far too few switches to claim a general improvement. The
   Windows adapter is also tested against a stand-in for `wlanapi.dll` built
   from the same ctypes prototypes, and every structure's size and offsets are
   checked against the Windows x64 layout.
@@ -379,7 +382,7 @@ roampredict report
   saw for your current AP, or against -85 dBm if the scan did not hear it at
   all. The `DECISION` line says when this happened.
 * `NO_CANDIDATE` lines say why RoamPredict wants to switch but does not: the
-  best AP and what it lacks (e.g. "only +6.0 dB vs current").
+  AP closest to qualifying and what it lacks (e.g. "only +6.0 dB vs current").
 
 **Emergency stop** from any other window: `roampredict kill`. A running
 RoamPredict stops switching within a quarter of a second. `roampredict unkill`

@@ -746,9 +746,11 @@ class Engine:
         if best is None:
             if now - self._last_no_candidate_log >= self.config.no_candidate_log_interval_s:
                 self._last_no_candidate_log = now
-                top = ranked[0] if ranked else None
+                # Name the AP closest to qualifying (largest gain), not the top score:
+                # "best: ... at -86 dBm" explained nothing on a campus walk.
+                top = max(ranked, key=lambda r: r.gain_db) if ranked else None
                 why = (
-                    f"best: {top.bssid} at {top.rssi_dbm:.0f} dBm, {top.reject_reason}"
+                    f"closest: {top.bssid} at {top.rssi_dbm:.0f} dBm, {top.reject_reason} ({len(ranked)} APs checked)"
                     if top is not None
                     else "no other AP of this network in the list"
                 )
@@ -782,7 +784,7 @@ class Engine:
             self._verify_blocked_until = self.adapter.now() + self.config.verify_backoff_s
             self.telemetry.emit(
                 "not_verified",
-                f"not switching to {best.bssid}: {verification.reason}",
+                f"not switching to {best.bssid}: {verification.reason}{'; ' + note if note else ''}",
                 candidate=best.as_dict(),
                 verify=verification.as_dict(),
             )
