@@ -120,6 +120,8 @@ SCHEMA: dict[str, dict[str, type]] = {
         "arp_flush": bool,
         "dhcp_renew": bool,
         "wait_for_usual_next_ap": bool,
+        "probe_trigger": bool,
+        "probe_trigger_max_dbm": float,
     },
     "ranking": {
         "w_learned": float,
@@ -243,10 +245,14 @@ def _build(data: dict[str, dict[str, Any]]) -> AppConfig:
             },
         )
     )
+    engine_kw = pick(roam, {"probe_trigger_max_dbm": "probe_trigger_max_dbm"})
+    if roam.get("probe_trigger") is False:
+        engine_kw["probe_trigger_max_dbm"] = None
     engine = EngineConfig(
         **pick(sig, {"sample_hz": "sample_hz"}),
         **pick(roam, {"degrading_scan_interval_s": "degrading_scan_interval_s", "wait_for_usual_next_ap": "defer_to_learned"}),
         **pick(rank, {"min_dwell_learn_s": "min_dwell_learn_s"}),
+        **engine_kw,
     )
     safety_kw = pick(
         saf,

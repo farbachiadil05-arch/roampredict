@@ -27,6 +27,7 @@ def test_example_file_loads_and_values_are_wired_through():
     assert cfg.engine.defer_to_learned is True and cfg.engine.sample_hz == 4
     assert cfg.trend.window_s == 3.0 and cfg.filter.smoother == "ema"
     assert cfg.predictor.band_2g_penalty_db == 7
+    assert cfg.engine.probe_trigger_max_dbm == -65
 
 
 def test_mapping_of_user_sections():
@@ -88,3 +89,9 @@ def test_overrides_and_paths(tmp_path, monkeypatch):
     assert cfg.with_active(True).safety.dry_run is False
     assert cfg.with_interface(None) is cfg
     assert cfg.with_interface("Intel").interface == "Intel"
+
+
+def test_probe_trigger_can_be_switched_off(tmp_path):
+    path = tmp_path / "c.toml"
+    path.write_text("[roam]\nprobe_trigger = false\n", encoding="utf-8")
+    assert load_config(path).engine.probe_trigger_max_dbm is None

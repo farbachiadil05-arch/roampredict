@@ -367,6 +367,13 @@ roampredict report
   number of times in each mode, then compare.
 * `roampredict report --timeline` lists the last outages and roams in time
   order, for example to see whether each internet outage came with a roam.
+* With `--probe`, a dead internet connection is also a reason to move: on a
+  campus walk the internet stopped answering 5 to 12 s before Windows declared
+  the Wi-Fi link lost. While the probe gets no answers and the signal is at or
+  below -65 dBm, RoamPredict treats it like "roam now" (state line: `internet
+  stopped answering at ... dBm`). The usual rules still apply: a candidate at
+  least 8 dB stronger, fresh scan, allow-list, rate limit. Turn it off with
+  `probe_trigger = false` under `[roam]`.
 
 **Emergency stop** from any other window: `roampredict kill`. A running
 RoamPredict stops switching within a quarter of a second. `roampredict unkill`

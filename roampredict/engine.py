@@ -89,6 +89,11 @@ class EngineConfig:
     # long after a reset when the RSSI comes from signal quality.  Level-based
     # alarms (e.g. below the roam threshold) keep working.
     slope_warmup_s: float = 9.0
+    # With `run --probe`: the internet often stops answering several seconds
+    # before Windows declares the Wi-Fi link lost (5-12 s on a campus walk).
+    # While it does not answer and the signal is at or below this level, act
+    # as if a roam is imminent.  None turns this off.
+    probe_trigger_max_dbm: float | None = -65.0
     prediction_window_s: float = 120.0
     association_retention_days: float = 30.0
     max_consecutive_errors: int = 40
@@ -156,6 +161,7 @@ class Engine:
         self._signal_reset_at = -math.inf
         self._l3_checked_at = -math.inf
         self._l3_last: tuple[str, int | None, str | None] | None = None
+        self._net_down = False  # the internet probe currently gets no answers
         self._bss: list[BssEntry] = []
         self._bss_read_at = -math.inf
         self._scan_requested_at = -math.inf
@@ -279,6 +285,11 @@ class Engine:
         ttt = time_to_threshold(level, slope, self.sm.config.roam_threshold_dbm)
         snap = SignalSnapshot(t=now, smoothed_dbm=sample.smoothed, trend=est, ttt_s=ttt)
         self.last_snapshot = snap
+        limit = self.config.probe_trigger_max_dbm
+        if self._net_down and limit is not None and sample.smoothed <= limit:
+            self.sm.set_external_alarm(f"internet stopped answering at {sample.smoothed:.1f} dBm")
+        else:
+            self.sm.set_external_alarm(None)
         state = self.sm.update(snap)
         if self.config.log_samples:
             self.telemetry.emit(
@@ -511,8 +522,10 @@ class Engine:
         label = "" if self.probe is None else self.probe.label
         since = format_clock(o.start_wall)
         if ev.kind == "down":
+            self._net_down = True
             self.telemetry.emit("net_down", f"no answer from {label} since {since}", target=label, since=o.start_wall)
             return
+        self._net_down = False
         self.session_outages["internet"].append(o.duration_s)
         self.store.record_outage(
             OutageRecord(

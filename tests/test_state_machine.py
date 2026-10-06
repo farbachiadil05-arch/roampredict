@@ -179,3 +179,18 @@ def test_imminent_says_why():
     run(fast, 0.0, 1.0, -62.0, slope=-6.0, falling=True, ttt=2.0)
     assert fast.state is RoamState.ROAM_IMMINENT
     assert fast.history[-1].reason.startswith("falling fast")
+
+
+def test_external_alarm_counts_like_a_weak_signal_until_cleared():
+    sm = RoamStateMachine()
+    t = run(sm, 0.0, 2.0, -66.0)  # weak-ish but steady: no alarm on its own
+    assert sm.state is RoamState.STABLE
+    sm.set_external_alarm("internet stopped answering at -66.0 dBm")
+    t = run(sm, t, 1.0, -66.0)
+    assert sm.state is RoamState.ROAM_IMMINENT
+    assert sm.history[-1].reason.startswith("internet stopped answering at -66.0 dBm")
+    t = run(sm, t, 5.0, -66.0)
+    assert sm.state is RoamState.ROAM_IMMINENT  # does not "calm down" while the alarm holds
+    sm.set_external_alarm(None)
+    run(sm, t, 3.0, -66.0)
+    assert sm.state is RoamState.DEGRADING  # the usual calm-down once it is cleared

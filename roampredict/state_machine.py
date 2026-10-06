@@ -9,6 +9,8 @@ Anti-flapping rules:
   ``degrade_enter_dbm`` but only ends above ``degrade_exit_dbm``.
 * After a roam the machine sits in COOLDOWN for ``cooldown_s`` (longer after a
   failure), which is the minimum time between roams and stops ping-pong.
+* An *external alarm* (:meth:`set_external_alarm`, e.g. "the internet stopped
+  answering") counts like a signal below the roam threshold while it is set.
 
 The machine never starts a roam by itself: the engine calls :meth:`begin_roam`
 only when a verified candidate exists and the safety gate allows it.
@@ -130,6 +132,7 @@ class RoamStateMachine:
         self._imminent = _Hold()
         self._recover = _Hold()
         self._calm = _Hold()
+        self._external: str | None = None
         self.history: deque[Transition] = deque(maxlen=500)
 
     @property
@@ -153,13 +156,15 @@ class RoamStateMachine:
             and snap.trend.slope_dbm_s <= c.falling_slope_dbm_s
             and (c.slope_trigger_margin_db is None or rssi <= c.roam_threshold_dbm + c.slope_trigger_margin_db)
         )
-        self._degrade.update(t, rssi < c.degrade_enter_dbm or (steep and snap.ttt_s <= c.degrade_horizon_s))
-        self._imminent.update(t, rssi <= c.roam_threshold_dbm or (steep and snap.ttt_s <= c.imminent_lead_s))
-        self._recover.update(t, rssi >= c.degrade_exit_dbm and not snap.trend.falling)
+        external = self._external is not None
+        self._degrade.update(t, rssi < c.degrade_enter_dbm or (steep and snap.ttt_s <= c.degrade_horizon_s) or external)
+        self._imminent.update(t, rssi <= c.roam_threshold_dbm or (steep and snap.ttt_s <= c.imminent_lead_s) or external)
+        self._recover.update(t, rssi >= c.degrade_exit_dbm and not snap.trend.falling and not external)
         self._calm.update(
             t,
             rssi > c.roam_threshold_dbm + c.imminent_exit_margin_db
-            and not (steep and snap.ttt_s <= 2 * c.imminent_lead_s),
+            and not (steep and snap.ttt_s <= 2 * c.imminent_lead_s)
+            and not external,
         )
 
         if self._state is RoamState.ROAMING:
@@ -189,7 +194,13 @@ class RoamStateMachine:
         threshold = self.config.roam_threshold_dbm
         if snap.smoothed_dbm <= threshold:
             return f"already below {threshold:.0f} dBm"
+        if self._external is not None:
+            return self._external
         return "falling fast"
+
+    def set_external_alarm(self, reason: str | None) -> None:
+        """Set (with a reason) or clear (None) an outside sign that the link is failing."""
+        self._external = reason
 
     def begin_roam(self, t: float) -> None:
         if self._state is not RoamState.ROAM_IMMINENT:

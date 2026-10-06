@@ -369,3 +369,50 @@ def test_self_assigned_address_is_explained():
     ticks(engine, adapter, 5.0)
     [change] = kinds(tel, "ip_change")
     assert "169.254.180.174/16 via no gateway (self-assigned: DHCP did not answer, so no internet)" in change["msg"]
+
+
+def _probe_down_then_up(down_at, up_at):
+    from roampredict.net.probe import Outage, ProbeEvent
+
+    class TimedProbe(FakeProbe):
+        def __init__(self, clock):
+            super().__init__([])
+            self.clock = clock
+            self.sent = set()
+
+        def poll(self):
+            t, out = self.clock(), []
+            if t >= down_at and "down" not in self.sent:
+                self.sent.add("down")
+                out.append(ProbeEvent("down", Outage(WALL0 + down_at, 0.5, 2, ongoing=True)))
+            if t >= up_at and "up" not in self.sent:
+                self.sent.add("up")
+                out.append(ProbeEvent("up", Outage(WALL0 + down_at, up_at - down_at, 9)))
+            return out
+
+    return TimedProbe
+
+
+@pytest.mark.parametrize("rssi, expect_alarm", [(-70.0, True), (-55.0, False)])
+def test_dead_internet_with_a_weak_signal_raises_the_alarm(rssi, expect_alarm):
+    radio, adapter, engine, tel, store, _ = build([ScriptedAp(AP1, rssi), ScriptedAp(AP2, rssi + 15)], dry_run=True)
+    engine.probe = _probe_down_then_up(down_at=12.0, up_at=20.0)(radio.now)
+    ticks(engine, adapter, 25.0)
+    alarms = [e for e in kinds(tel, "state") if "internet stopped answering" in e["msg"]]
+    if expect_alarm:
+        assert alarms and alarms[0]["dst"] == "ROAM_IMMINENT"
+        assert kinds(tel, "would_switch")  # a much stronger AP was there: it would have switched
+    else:
+        assert alarms == []  # strong signal: probably not a Wi-Fi problem, leave it alone
+
+
+def test_dead_internet_trigger_switches_in_active_mode_and_can_be_disabled():
+    aps = [ScriptedAp(AP1, -70.0), ScriptedAp(AP2, -55.0)]
+    radio, adapter, engine, tel, store, _ = build(aps)
+    engine.probe = _probe_down_then_up(down_at=12.0, up_at=60.0)(radio.now)
+    ticks(engine, adapter, 20.0)
+    assert adapter.connect_calls == [("testnet", AP2)]
+    radio, adapter, engine, tel, store, _ = build(aps, engine_config=EngineConfig(probe_trigger_max_dbm=None))
+    engine.probe = _probe_down_then_up(down_at=12.0, up_at=60.0)(radio.now)
+    ticks(engine, adapter, 20.0)
+    assert adapter.connect_calls == []
