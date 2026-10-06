@@ -145,13 +145,20 @@ Honest list of what Windows allows and what this program cannot do.
   fast fall and cause a switch that was not needed.
 * The ">= 8 dB stronger" rule prevents ping-pong, but in a corner where all APs
   are weak it keeps you on a weak AP longer. The simulator shows this too.
+* 2.4 GHz access points always read stronger than 5 GHz ones (less path loss)
+  but are slower and more crowded, so they count 7 dB weaker when choosing
+  (`band_2g_penalty_db`). The 7 dB is the physics difference, not a
+  measurement of your network.
 
 **About this code**
 
-* **It has not run on real Wi-Fi hardware yet.** The Windows adapter was tested
-  against a stand-in for `wlanapi.dll` built from the same ctypes prototypes,
-  and every structure's size and offsets are checked against the Windows x64
-  layout. Your first real test is `roampredict doctor`, then dry-run.
+* **Real hardware so far: one laptop (Intel AX201, Windows 10) on one campus
+  network, in dry-run.** That found and fixed several problems (nonsense RSSI
+  from the driver, blocked gateway ping, "scan already running", a crash on
+  large error codes). Active switching has not run on real hardware yet. The
+  Windows adapter is also tested against a stand-in for `wlanapi.dll` built
+  from the same ctypes prototypes, and every structure's size and offsets are
+  checked against the Windows x64 layout.
 * **The simulator's switch times are assumptions, not measurements** (listed
   in `simulator/link_model.py` and printed with every result).
 
