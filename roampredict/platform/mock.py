@@ -316,7 +316,7 @@ class ScriptedRadio:
         out = []
         for bssid, (rssi, heard_at) in self._cache.items():
             ap = self.aps[bssid]
-            if bssid == self.current:
+            if bssid == self.current and bssid not in self.hidden:
                 rssi, heard_at = ap.rssi_at(self.t), self.t
             channel, band = freq_to_channel(ap.freq_mhz)
             out.append(

@@ -94,6 +94,12 @@ class EngineConfig:
     # While it does not answer and the signal is at or below this level, act
     # as if a roam is imminent.  None turns this off.
     probe_trigger_max_dbm: float | None = -65.0
+    # While the internet is dead the signal reading is often frozen at its last
+    # value (an active campus walk: "-70 -70 -70 ..." until Windows dropped the
+    # link), so candidates are compared with what the last scan measured for
+    # the current AP, or with this value if a fresh scan did not hear it at all.
+    dead_link_assumed_dbm: float = -85.0
+    dead_link_scan_max_age_s: float = 6.0
     prediction_window_s: float = 120.0
     association_retention_days: float = 30.0
     max_consecutive_errors: int = 40
@@ -689,10 +695,27 @@ class Engine:
                 return r, share, n
         return None
 
+    def _dead_link_rssi(self, link: LinkStatus, estimate: float) -> tuple[float, str]:
+        """The current link's signal to compare candidates with while the internet is dead."""
+        cfg = self.config
+        fresh = [e for e in self._bss if e.age_s is not None and e.age_s <= cfg.dead_link_scan_max_age_s]
+        own = next((e for e in fresh if e.bssid == link.bssid), None)
+        if own is not None:
+            if own.rssi_dbm < estimate:
+                return own.rssi_dbm, f"internet down; the last scan measured the current AP at {own.rssi_dbm:.0f} dBm"
+            return estimate, ""
+        if fresh:
+            value = min(estimate, cfg.dead_link_assumed_dbm)
+            return value, f"internet down and the last scan did not hear the current AP: counted as {value:.0f} dBm"
+        return estimate, ""
+
     def _consider_roam(self, now: float, link: LinkStatus, estimate: float) -> None:
         if now < self._verify_blocked_until:
             return
         assert link.ssid is not None and link.bssid is not None
+        note = ""
+        if self._net_down:
+            estimate, note = self._dead_link_rssi(link, estimate)
         ranked = self._rank(link, estimate, self._bss)
         best = Predictor.best(ranked)
 
@@ -707,6 +730,7 @@ class Engine:
             and (best is None or best.bssid != usual[0].bssid)
             and snap is not None
             and snap.ttt_s > self.config.defer_min_ttt_s
+            and not self._net_down  # a dead link has no time left to wait with
         ):
             target, share, n = usual
             if not self._defer_logged:
@@ -722,9 +746,15 @@ class Engine:
         if best is None:
             if now - self._last_no_candidate_log >= self.config.no_candidate_log_interval_s:
                 self._last_no_candidate_log = now
+                top = ranked[0] if ranked else None
+                why = (
+                    f"best: {top.bssid} at {top.rssi_dbm:.0f} dBm, {top.reject_reason}"
+                    if top is not None
+                    else "no other AP of this network in the list"
+                )
                 self.telemetry.emit(
                     "no_candidate",
-                    f"signal is falling ({estimate:.0f} dBm) but no AP qualifies yet",
+                    f"would switch (current {estimate:.0f} dBm{'; ' + note if note else ''}) but no AP qualifies - {why}",
                     ranking=[r.as_dict() for r in ranked[:3]],
                 )
             return
@@ -733,8 +763,9 @@ class Engine:
         if not gate.allowed and self._episode_logged:
             return
         penalty = self.predictor.config.band_2g_penalty_db
+        trust = bool(note)  # the live reading is the frozen one: do not let it override the measured value
         verification = self.executor.verify(
-            link=link, bssid=best.bssid, current_estimate_dbm=estimate, band_2g_penalty_db=penalty
+            link=link, bssid=best.bssid, current_estimate_dbm=estimate, band_2g_penalty_db=penalty, trust_estimate=trust
         )
         self._bss_read_at = -math.inf
         if not verification.ok and verification.entries:
@@ -743,7 +774,7 @@ class Engine:
             alt = Predictor.best(reranked)
             if alt is not None and alt.bssid != best.bssid:
                 second = self.executor.verify(
-                    link=link, bssid=alt.bssid, current_estimate_dbm=estimate, band_2g_penalty_db=penalty
+                    link=link, bssid=alt.bssid, current_estimate_dbm=estimate, band_2g_penalty_db=penalty, trust_estimate=trust
                 )
                 if second.ok:
                     best, ranked, verification = alt, reranked, second
@@ -764,13 +795,13 @@ class Engine:
             self.telemetry.emit(
                 "would_switch",
                 f"WOULD switch {link.bssid} -> {best.bssid} ({verification.gain_db:+.1f} dB, score {best.total:.2f}, "
-                f"{best.candidate_class}{_band_note(best)}) - not acting: {gate.reason}",
+                f"{best.candidate_class}{_band_note(best)}{'; ' + note if note else ''}) - not acting: {gate.reason}",
                 gate=gate.reason,
                 ranking=[r.as_dict() for r in ranked[:5]],
                 verify=verification.as_dict(),
             )
             return
-        self._switch(link, best, verification, ranked)
+        self._switch(link, best, verification, ranked, note)
 
     def _switch(
         self,
@@ -778,6 +809,7 @@ class Engine:
         best: ScoreBreakdown,
         verification: Verification,
         ranked: list[ScoreBreakdown],
+        note: str = "",
     ) -> None:
         assert link.bssid is not None
         t_start = self.adapter.now()
@@ -786,7 +818,7 @@ class Engine:
         self.telemetry.emit(
             "decision",
             f"switching {link.bssid} -> {best.bssid} ({verification.gain_db:+.1f} dB, score {best.total:.2f}, "
-            f"{best.candidate_class}{_band_note(best)})",
+            f"{best.candidate_class}{_band_note(best)}{'; ' + note if note else ''})",
             ranking=[r.as_dict() for r in ranked[:5]],
             verify=verification.as_dict(),
         )

@@ -200,3 +200,10 @@ def test_verify_applies_the_2g_handicap():
     v = ex.verify(link=adapter.link_status(), bssid=CAND, current_estimate_dbm=-74.0, band_2g_penalty_db=7.0)
     assert not v.ok and v.gain_db == pytest.approx(5.0) and "2.4 GHz handicap" in v.reason
     assert ex.verify(link=adapter.link_status(), bssid=CAND, current_estimate_dbm=-74.0).ok  # no handicap given
+
+
+def test_verify_can_trust_a_corrected_estimate_over_the_live_reading():
+    radio, adapter, _, ex = setup(cand_rssi=-72.0, cur_rssi=-70.0, initial_cache_age_s=1.0)
+    assert not ex.verify(link=link(adapter), bssid=CAND, current_estimate_dbm=-84.0).ok  # live -70 wins: +2 dB
+    v = ex.verify(link=link(adapter), bssid=CAND, current_estimate_dbm=-84.0, trust_estimate=True)
+    assert v.ok and v.gain_db == pytest.approx(12.0)

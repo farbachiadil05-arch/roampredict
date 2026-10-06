@@ -228,7 +228,13 @@ class RoamExecutor:
         return False
 
     def verify(
-        self, *, link: LinkStatus, bssid: str, current_estimate_dbm: float, band_2g_penalty_db: float = 0.0
+        self,
+        *,
+        link: LinkStatus,
+        bssid: str,
+        current_estimate_dbm: float,
+        band_2g_penalty_db: float = 0.0,
+        trust_estimate: bool = False,
     ) -> Verification:
         """Refresh the BSS list and check the candidate against fresh data.
 
@@ -260,7 +266,7 @@ class RoamExecutor:
         if not now_link.connected or now_link.bssid != link.bssid:
             return Verification(False, "link changed while verifying (Windows roamed or disconnected)", cand, **common)
         current = current_estimate_dbm
-        if now_link.rssi_dbm is not None:
+        if now_link.rssi_dbm is not None and not trust_estimate:
             current = max(current, now_link.rssi_dbm)
         gain = effective_rssi(cand.rssi_dbm, cand.band.value, band_2g_penalty_db) - current
         if gain < cfg.min_gain_db:

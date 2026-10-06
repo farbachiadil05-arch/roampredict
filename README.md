@@ -374,6 +374,12 @@ roampredict report
   stopped answering at ... dBm`). The usual rules still apply: a candidate at
   least 8 dB stronger, fresh scan, allow-list, rate limit. Turn it off with
   `probe_trigger = false` under `[roam]`.
+* While the internet is dead, the signal reading on some laptops freezes at
+  its last value. "8 dB stronger" is then measured against what the last scan
+  saw for your current AP, or against -85 dBm if the scan did not hear it at
+  all. The `DECISION` line says when this happened.
+* `NO_CANDIDATE` lines say why RoamPredict wants to switch but does not: the
+  best AP and what it lacks (e.g. "only +6.0 dB vs current").
 
 **Emergency stop** from any other window: `roampredict kill`. A running
 RoamPredict stops switching within a quarter of a second. `roampredict unkill`

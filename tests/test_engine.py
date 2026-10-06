@@ -416,3 +416,46 @@ def test_dead_internet_trigger_switches_in_active_mode_and_can_be_disabled():
     engine.probe = _probe_down_then_up(down_at=12.0, up_at=60.0)(radio.now)
     ticks(engine, adapter, 20.0)
     assert adapter.connect_calls == []
+
+
+def _frozen_reading(adapter, value):
+    """The link keeps reporting ``value`` dBm, like Windows' frozen quality reading."""
+    import dataclasses
+
+    real = adapter.link_status
+
+    def frozen():
+        link = real()
+        return dataclasses.replace(link, rssi_dbm=value, rssi_source="quality") if link.connected else link
+
+    adapter.link_status = frozen
+
+
+def test_dead_link_is_judged_by_what_the_scan_measured():
+    # The reading is stuck at -70, but scans measure the current AP at -84: AP2 at -72 is a real improvement.
+    radio, adapter, engine, tel, store, _ = build([ScriptedAp(AP1, -84.0), ScriptedAp(AP2, -72.0)])
+    _frozen_reading(adapter, -70.0)
+    engine.probe = _probe_down_then_up(down_at=12.0, up_at=60.0)(radio.now)
+    ticks(engine, adapter, 25.0)
+    assert adapter.connect_calls == [("testnet", AP2)]
+    decision = kinds(tel, "decision")[0]["msg"]
+    assert "the last scan measured the current AP at -84 dBm" in decision
+
+
+def test_dead_link_whose_ap_is_not_heard_counts_as_very_weak():
+    radio, adapter, engine, tel, store, _ = build([ScriptedAp(AP1, -70.0), ScriptedAp(AP2, -74.0)])
+    _frozen_reading(adapter, -70.0)
+    radio.hidden.add(AP1)  # scans no longer hear our own AP
+    engine.probe = _probe_down_then_up(down_at=12.0, up_at=60.0)(radio.now)
+    ticks(engine, adapter, 25.0)
+    assert adapter.connect_calls == [("testnet", AP2)]
+    assert "did not hear the current AP: counted as -85 dBm" in kinds(tel, "decision")[0]["msg"]
+
+
+def test_without_a_dead_link_the_frozen_reading_still_rules_and_the_reason_is_shown():
+    radio, adapter, engine, tel, store, _ = build([ScriptedAp(AP1, -84.0), ScriptedAp(AP2, -72.0)])
+    _frozen_reading(adapter, -78.0)  # below the threshold: wants to switch, but AP2 is only +6 dB
+    ticks(engine, adapter, 25.0)
+    assert adapter.connect_calls == []
+    msg = kinds(tel, "no_candidate")[0]["msg"]
+    assert "no AP qualifies" in msg and AP2 in msg and "only +6.0 dB" in msg

@@ -31,6 +31,8 @@ _CONSOLE_KINDS = frozenset(
         "decision",
         "would_switch",
         "not_verified",
+        "no_candidate",
+        "waiting",
         "switch_result",
         "windows_roam",
         "prediction_check",
