@@ -70,10 +70,15 @@ class PredictorConfig:
     laplace_alpha: float = 1.0
     recently_left_block_s: float = 45.0
     recently_left_override_gain_db: float = 12.0
+    # 2.4 GHz always reads stronger (about 7 dB less path loss than 5 GHz) but
+    # is slower and more crowded, so a 2.4 GHz AP counts this much weaker.
+    band_2g_penalty_db: float = 7.0
 
     def __post_init__(self) -> None:
         if self.rssi_ceiling_dbm <= self.rssi_floor_dbm:
             raise ValueError("rssi_ceiling_dbm must be above rssi_floor_dbm")
+        if self.band_2g_penalty_db < 0:
+            raise ValueError("band_2g_penalty_db must be >= 0")
         for name in ("seen_tau_s", "max_candidate_age_s", "recent_assoc_ttl_s", "laplace_alpha"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be > 0")
@@ -89,6 +94,11 @@ class CandidateInput:
     age_s: float | None = None
     channel: int | None = None
     band: str | None = None
+
+
+def effective_rssi(rssi_dbm: float, band: str | None, band_2g_penalty_db: float) -> float:
+    """The RSSI used for comparisons: 2.4 GHz APs count ``band_2g_penalty_db`` weaker."""
+    return rssi_dbm - band_2g_penalty_db if band == "2.4GHz" else rssi_dbm
 
 
 @dataclass(frozen=True)
@@ -110,6 +120,7 @@ class ScoreBreakdown:
     eligible: bool
     reject_reason: str | None = None
     channel: int | None = None
+    band: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         def r(x: float | None, nd: int = 3) -> float | None:
@@ -180,7 +191,8 @@ class Predictor:
         results = []
         for bssid, c in pool.items():
             learned_p = (counts.get(bssid, 0) + alpha) / denominator
-            rssi_norm = min(1.0, max(0.0, (c.rssi_dbm - cfg.rssi_floor_dbm) / (cfg.rssi_ceiling_dbm - cfg.rssi_floor_dbm)))
+            rssi = effective_rssi(c.rssi_dbm, c.band, cfg.band_2g_penalty_db)
+            rssi_norm = min(1.0, max(0.0, (rssi - cfg.rssi_floor_dbm) / (cfg.rssi_ceiling_dbm - cfg.rssi_floor_dbm)))
             seen_raw = 0.5 if c.age_s is None else math.exp(-max(0.0, c.age_s) / cfg.seen_tau_s)
             assoc_age = None if bssid not in last_assoc else now - last_assoc[bssid]
             if assoc_age is not None and 0 <= assoc_age <= cfg.recent_assoc_ttl_s:
@@ -193,12 +205,13 @@ class Predictor:
             assoc_term = w.recently_connected * assoc_raw / w.total
             total = learned_term + rssi_term + seen_term + assoc_term
 
-            gain = c.rssi_dbm - current_rssi_dbm
+            gain = rssi - current_rssi_dbm
             reason = None
             if bssid in deny:
                 reason = "deny-listed"
             elif gain < cfg.min_gain_db:
-                reason = f"only {gain:+.1f} dB vs current (needs +{cfg.min_gain_db:.0f})"
+                handicap = f" after the {cfg.band_2g_penalty_db:.0f} dB 2.4 GHz handicap" if rssi != c.rssi_dbm else ""
+                reason = f"only {gain:+.1f} dB vs current{handicap} (needs +{cfg.min_gain_db:.0f})"
             elif c.age_s is not None and c.age_s > cfg.max_candidate_age_s:
                 reason = f"last heard {c.age_s:.0f} s ago"
             elif (
@@ -227,6 +240,7 @@ class Predictor:
                     eligible=reason is None,
                     reject_reason=reason,
                     channel=c.channel,
+                    band=c.band,
                 )
             )
         results.sort(key=lambda s: (not s.eligible, -s.total, -s.rssi_dbm))

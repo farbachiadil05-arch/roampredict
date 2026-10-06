@@ -26,6 +26,7 @@ def test_example_file_loads_and_values_are_wired_through():
     assert cfg.predictor.recent_assoc_ttl_s == 12 * 3600
     assert cfg.engine.defer_to_learned is True and cfg.engine.sample_hz == 4
     assert cfg.trend.window_s == 3.0 and cfg.filter.smoother == "ema"
+    assert cfg.predictor.band_2g_penalty_db == 7
 
 
 def test_mapping_of_user_sections():

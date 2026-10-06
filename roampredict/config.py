@@ -130,6 +130,7 @@ SCHEMA: dict[str, dict[str, type]] = {
         "seen_tau_s": float,
         "recently_left_block_s": float,
         "min_dwell_learn_s": float,
+        "band_2g_penalty_db": float,
     },
     "safety": {
         "dry_run": bool,
@@ -216,7 +217,10 @@ def _build(data: dict[str, dict[str, Any]]) -> AppConfig:
             {"w_learned": "learned", "w_rssi": "rssi", "w_seen": "seen_recency", "w_recently_connected": "recently_connected"},
         )
     )
-    predictor_kw = pick(rank, {"seen_tau_s": "seen_tau_s", "recently_left_block_s": "recently_left_block_s"})
+    predictor_kw = pick(
+        rank,
+        {"seen_tau_s": "seen_tau_s", "recently_left_block_s": "recently_left_block_s", "band_2g_penalty_db": "band_2g_penalty_db"},
+    )
     if "recent_assoc_ttl_hours" in rank:
         predictor_kw["recent_assoc_ttl_s"] = float(rank["recent_assoc_ttl_hours"]) * 3600.0
     predictor = PredictorConfig(weights=weights, **predictor_kw, **pick(roam, {"min_gain_db": "min_gain_db"}))

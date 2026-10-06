@@ -43,7 +43,7 @@ from roampredict.platform.base import (
     WlanError,
 )
 from roampredict.telemetry import Telemetry
-from roampredict.topology.predictor import ScoreBreakdown
+from roampredict.topology.predictor import ScoreBreakdown, effective_rssi
 from roampredict.topology.store import SwitchRecord
 
 __all__ = ["ExecutorConfig", "Verification", "RoamOutcome", "RoamExecutor", "is_auth_reason"]
@@ -227,7 +227,9 @@ class RoamExecutor:
             return True
         return False
 
-    def verify(self, *, link: LinkStatus, bssid: str, current_estimate_dbm: float) -> Verification:
+    def verify(
+        self, *, link: LinkStatus, bssid: str, current_estimate_dbm: float, band_2g_penalty_db: float = 0.0
+    ) -> Verification:
         """Refresh the BSS list and check the candidate against fresh data.
 
         "Refresh" means re-reading Windows' BSS list; if the candidate was not
@@ -260,10 +262,16 @@ class RoamExecutor:
         current = current_estimate_dbm
         if now_link.rssi_dbm is not None:
             current = max(current, now_link.rssi_dbm)
-        gain = cand.rssi_dbm - current
+        gain = effective_rssi(cand.rssi_dbm, cand.band.value, band_2g_penalty_db) - current
         if gain < cfg.min_gain_db:
+            handicap = f" after the {band_2g_penalty_db:.0f} dB 2.4 GHz handicap" if cand.band.value == "2.4GHz" and band_2g_penalty_db else ""
             return Verification(
-                False, f"candidate only {gain:+.1f} dB vs current (needs +{cfg.min_gain_db:.0f})", cand, current, gain, **common
+                False,
+                f"candidate only {gain:+.1f} dB vs current{handicap} (needs +{cfg.min_gain_db:.0f})",
+                cand,
+                current,
+                gain,
+                **common,
             )
         return Verification(True, "verified", cand, current, gain, **common)
 

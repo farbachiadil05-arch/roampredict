@@ -134,3 +134,25 @@ def test_classify_and_weights_validation():
         PredictorWeights(0, 0, 0, 0)
     with pytest.raises(ValueError):
         PredictorConfig(rssi_floor_dbm=-40, rssi_ceiling_dbm=-50)
+
+
+def test_2g_aps_count_weaker_than_they_read(store):
+    p = Predictor(store)
+    ranked = {
+        r.bssid: r
+        for r in rank(
+            p,
+            [
+                CandidateInput(B, "eduroam", -64.0, 1.0, 1, "2.4GHz"),  # reads +12 dB, counts +5
+                CandidateInput(C, "eduroam", -67.0, 1.0, 36, "5GHz"),  # +9 dB
+                CandidateInput(D, "eduroam", -59.0, 1.0, 6, "2.4GHz"),  # reads +17 dB, counts +10
+            ],
+        )
+    }
+    assert not ranked[B].eligible and "2.4 GHz handicap" in ranked[B].reject_reason
+    assert ranked[B].gain_db == pytest.approx(5.0) and ranked[B].rssi_dbm == -64.0 and ranked[B].band == "2.4GHz"
+    assert ranked[C].eligible and ranked[D].eligible and ranked[D].gain_db == pytest.approx(10.0)
+    off = Predictor(store, PredictorConfig(band_2g_penalty_db=0.0))
+    assert rank(off, [CandidateInput(B, "eduroam", -64.0, 1.0, 1, "2.4GHz")])[0].eligible
+    with pytest.raises(ValueError):
+        PredictorConfig(band_2g_penalty_db=-1)

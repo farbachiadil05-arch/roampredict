@@ -51,6 +51,7 @@ recent_assoc_ttl_hours = 12       # A GUESS. Windows' default PMKCacheTTL is 720
                                   # side may forget keys sooner. Check `roampredict report`.
 seen_tau_s = 20
 recently_left_block_s = 45        # do not go straight back to an AP we just left (ping-pong guard)
+band_2g_penalty_db = 7            # a 2.4 GHz AP counts this many dB weaker (reads stronger, works slower)
 min_dwell_learn_s = 10            # learn "A -> B" only after staying on B this long
 
 [signal]

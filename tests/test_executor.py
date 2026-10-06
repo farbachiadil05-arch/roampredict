@@ -190,3 +190,13 @@ def test_config_validation():
         ExecutorConfig(auth_stall_s=20.0, connect_timeout_s=12.0)
     with pytest.raises(ValueError):
         ExecutorConfig(scan_timeout_s=0)
+
+
+def test_verify_applies_the_2g_handicap():
+    aps = [ScriptedAp(CUR, -74.0), ScriptedAp(CAND, -62.0, freq_mhz=2412)]  # 2.4 GHz, reads +12 dB
+    radio = ScriptedRadio(aps, connected_to=CUR, initial_cache_age_s=1.0)
+    adapter = MockWlanAdapter(radio)
+    ex = RoamExecutor(adapter, MockNetworkOps(), ExecutorConfig(), Telemetry(console=False))
+    v = ex.verify(link=adapter.link_status(), bssid=CAND, current_estimate_dbm=-74.0, band_2g_penalty_db=7.0)
+    assert not v.ok and v.gain_db == pytest.approx(5.0) and "2.4 GHz handicap" in v.reason
+    assert ex.verify(link=adapter.link_status(), bssid=CAND, current_estimate_dbm=-74.0).ok  # no handicap given

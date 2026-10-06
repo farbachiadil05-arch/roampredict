@@ -719,14 +719,19 @@ class Engine:
         gate = self.safety.check_roam(link, now)
         if not gate.allowed and self._episode_logged:
             return
-        verification = self.executor.verify(link=link, bssid=best.bssid, current_estimate_dbm=estimate)
+        penalty = self.predictor.config.band_2g_penalty_db
+        verification = self.executor.verify(
+            link=link, bssid=best.bssid, current_estimate_dbm=estimate, band_2g_penalty_db=penalty
+        )
         self._bss_read_at = -math.inf
         if not verification.ok and verification.entries:
             # The refreshed list may point elsewhere: re-rank once on it.
             reranked = self._rank(link, estimate, list(verification.entries))
             alt = Predictor.best(reranked)
             if alt is not None and alt.bssid != best.bssid:
-                second = self.executor.verify(link=link, bssid=alt.bssid, current_estimate_dbm=estimate)
+                second = self.executor.verify(
+                    link=link, bssid=alt.bssid, current_estimate_dbm=estimate, band_2g_penalty_db=penalty
+                )
                 if second.ok:
                     best, ranked, verification = alt, reranked, second
         if not verification.ok:
@@ -746,7 +751,7 @@ class Engine:
             self.telemetry.emit(
                 "would_switch",
                 f"WOULD switch {link.bssid} -> {best.bssid} ({verification.gain_db:+.1f} dB, score {best.total:.2f}, "
-                f"{best.candidate_class}) - not acting: {gate.reason}",
+                f"{best.candidate_class}{_band_note(best)}) - not acting: {gate.reason}",
                 gate=gate.reason,
                 ranking=[r.as_dict() for r in ranked[:5]],
                 verify=verification.as_dict(),
@@ -768,7 +773,7 @@ class Engine:
         self.telemetry.emit(
             "decision",
             f"switching {link.bssid} -> {best.bssid} ({verification.gain_db:+.1f} dB, score {best.total:.2f}, "
-            f"{best.candidate_class})",
+            f"{best.candidate_class}{_band_note(best)})",
             ranking=[r.as_dict() for r in ranked[:5]],
             verify=verification.as_dict(),
         )
@@ -854,3 +859,7 @@ def _describe_l3(l3: tuple[str, int | None, str | None]) -> str:
     if ip.startswith("169.254."):
         text += " (self-assigned: DHCP did not answer, so no internet)"
     return text
+
+
+def _band_note(candidate: ScoreBreakdown) -> str:
+    return ", 2.4 GHz" if candidate.band == "2.4GHz" else ""
