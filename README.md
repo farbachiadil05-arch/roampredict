@@ -378,9 +378,14 @@ roampredict report
   least 8 dB stronger, fresh scan, allow-list, rate limit. Turn it off with
   `probe_trigger = false` under `[roam]`.
 * While the internet is dead, the signal reading on some laptops freezes at
-  its last value. "8 dB stronger" is then measured against what the last scan
-  saw for your current AP, or against -85 dBm if the scan did not hear it at
-  all. The `DECISION` line says when this happened.
+  its last value. "Stronger" is then measured against what the last scan saw
+  for your current AP, or against -85 dBm if the scan did not hear it at all.
+  If the scan confirms the current AP is weak or gone, RoamPredict takes the
+  **strongest** AP that beats it by just 3 dB (`dead_link_min_gain_db`)
+  instead of the usual 8: staying on a dead link is the worst option. On a
+  working link the full 8 dB margin stays, because every switch costs a few
+  seconds of campus login and close signals swap places all the time while you
+  walk. The `DECISION` line says which rule applied.
 * `NO_CANDIDATE` lines say why RoamPredict wants to switch but does not: the
   AP closest to qualifying and what it lacks (e.g. "only +6.0 dB vs current").
 

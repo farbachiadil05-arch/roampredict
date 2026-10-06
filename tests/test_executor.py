@@ -207,3 +207,10 @@ def test_verify_can_trust_a_corrected_estimate_over_the_live_reading():
     assert not ex.verify(link=link(adapter), bssid=CAND, current_estimate_dbm=-84.0).ok  # live -70 wins: +2 dB
     v = ex.verify(link=link(adapter), bssid=CAND, current_estimate_dbm=-84.0, trust_estimate=True)
     assert v.ok and v.gain_db == pytest.approx(12.0)
+
+
+def test_verify_margin_can_be_lowered_for_a_dead_link():
+    radio, adapter, _, ex = setup(cand_rssi=-70.0, cur_rssi=-74.0, initial_cache_age_s=1.0)
+    assert not ex.verify(link=link(adapter), bssid=CAND, current_estimate_dbm=-74.0).ok  # +4 < +8
+    v = ex.verify(link=link(adapter), bssid=CAND, current_estimate_dbm=-74.0, min_gain_db=3.0)
+    assert v.ok and v.gain_db == pytest.approx(4.0)

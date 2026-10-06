@@ -28,6 +28,7 @@ def test_example_file_loads_and_values_are_wired_through():
     assert cfg.trend.window_s == 3.0 and cfg.filter.smoother == "ema"
     assert cfg.predictor.band_2g_penalty_db == 7
     assert cfg.engine.probe_trigger_max_dbm == -65
+    assert cfg.engine.dead_link_min_gain_db == 3
 
 
 def test_mapping_of_user_sections():

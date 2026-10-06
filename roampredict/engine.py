@@ -100,6 +100,10 @@ class EngineConfig:
     # the current AP, or with this value if a fresh scan did not hear it at all.
     dead_link_assumed_dbm: float = -85.0
     dead_link_scan_max_age_s: float = 6.0
+    # On a dead link (the internet does not answer and the scan confirms the
+    # current AP is weak or gone) staying is the worst option: take the
+    # strongest AP that beats it by this much, instead of the usual +8 dB.
+    dead_link_min_gain_db: float = 3.0
     prediction_window_s: float = 120.0
     association_retention_days: float = 30.0
     max_consecutive_errors: int = 40
@@ -121,6 +125,8 @@ class EngineConfig:
         ):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be > 0")
+        if self.dead_link_min_gain_db < 0:
+            raise ValueError("dead_link_min_gain_db must be >= 0")
 
 
 class Engine:
@@ -662,7 +668,9 @@ class Engine:
 
     # -- decisions --------------------------------------------------------------------------
 
-    def _rank(self, link: LinkStatus, estimate: float, entries: list[BssEntry]) -> list[ScoreBreakdown]:
+    def _rank(
+        self, link: LinkStatus, estimate: float, entries: list[BssEntry], min_gain_db: float | None = None
+    ) -> list[ScoreBreakdown]:
         assert link.ssid is not None
         candidates = [
             CandidateInput(e.bssid, e.ssid, e.rssi_dbm, e.age_s, e.channel, e.band.value)
@@ -677,6 +685,7 @@ class Engine:
             now=self.wall_clock(),
             recently_left=self._recently_left,
             deny=self.safety.deny,
+            min_gain_db=min_gain_db,
         )
 
     def _usual_next(self, current: str, ranked: list[ScoreBreakdown]) -> tuple[ScoreBreakdown, float, int] | None:
@@ -714,10 +723,15 @@ class Engine:
             return
         assert link.ssid is not None and link.bssid is not None
         note = ""
+        min_gain: float | None = None  # None = the usual margin
         if self._net_down:
             estimate, note = self._dead_link_rssi(link, estimate)
-        ranked = self._rank(link, estimate, self._bss)
-        best = Predictor.best(ranked)
+            if note:  # the scan confirms the current AP is weak or gone: take the strongest
+                min_gain = self.config.dead_link_min_gain_db
+                note += f"; taking the strongest AP (needs +{min_gain:.0f} dB)"
+        pick = Predictor.best if min_gain is None else Predictor.strongest
+        ranked = self._rank(link, estimate, self._bss, min_gain)
+        best = pick(ranked)
 
         # Topology memory: if the AP we usually go to next is visible but not yet
         # good enough, and the current link still has time left, wait for it
@@ -767,16 +781,26 @@ class Engine:
         penalty = self.predictor.config.band_2g_penalty_db
         trust = bool(note)  # the live reading is the frozen one: do not let it override the measured value
         verification = self.executor.verify(
-            link=link, bssid=best.bssid, current_estimate_dbm=estimate, band_2g_penalty_db=penalty, trust_estimate=trust
+            link=link,
+            bssid=best.bssid,
+            current_estimate_dbm=estimate,
+            band_2g_penalty_db=penalty,
+            trust_estimate=trust,
+            min_gain_db=min_gain,
         )
         self._bss_read_at = -math.inf
         if not verification.ok and verification.entries:
             # The refreshed list may point elsewhere: re-rank once on it.
-            reranked = self._rank(link, estimate, list(verification.entries))
-            alt = Predictor.best(reranked)
+            reranked = self._rank(link, estimate, list(verification.entries), min_gain)
+            alt = pick(reranked)
             if alt is not None and alt.bssid != best.bssid:
                 second = self.executor.verify(
-                    link=link, bssid=alt.bssid, current_estimate_dbm=estimate, band_2g_penalty_db=penalty, trust_estimate=trust
+                    link=link,
+                    bssid=alt.bssid,
+                    current_estimate_dbm=estimate,
+                    band_2g_penalty_db=penalty,
+                    trust_estimate=trust,
+                    min_gain_db=min_gain,
                 )
                 if second.ok:
                     best, ranked, verification = alt, reranked, second

@@ -235,6 +235,7 @@ class RoamExecutor:
         current_estimate_dbm: float,
         band_2g_penalty_db: float = 0.0,
         trust_estimate: bool = False,
+        min_gain_db: float | None = None,
     ) -> Verification:
         """Refresh the BSS list and check the candidate against fresh data.
 
@@ -269,11 +270,12 @@ class RoamExecutor:
         if now_link.rssi_dbm is not None and not trust_estimate:
             current = max(current, now_link.rssi_dbm)
         gain = effective_rssi(cand.rssi_dbm, cand.band.value, band_2g_penalty_db) - current
-        if gain < cfg.min_gain_db:
+        need = cfg.min_gain_db if min_gain_db is None else min_gain_db
+        if gain < need:
             handicap = f" after the {band_2g_penalty_db:.0f} dB 2.4 GHz handicap" if cand.band.value == "2.4GHz" and band_2g_penalty_db else ""
             return Verification(
                 False,
-                f"candidate only {gain:+.1f} dB vs current{handicap} (needs +{cfg.min_gain_db:.0f})",
+                f"candidate only {gain:+.1f} dB vs current{handicap} (needs +{need:.0f})",
                 cand,
                 current,
                 gain,

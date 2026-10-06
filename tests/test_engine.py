@@ -459,3 +459,23 @@ def test_without_a_dead_link_the_frozen_reading_still_rules_and_the_reason_is_sh
     assert adapter.connect_calls == []
     msg = kinds(tel, "no_candidate")[0]["msg"]
     assert "no AP qualifies" in msg and AP2 in msg and "only +6.0 dB" in msg
+
+
+def test_dead_link_takes_the_strongest_ap_with_a_small_margin():
+    aps = [ScriptedAp(AP1, -80.0), ScriptedAp(AP2, -76.0), ScriptedAp(AP3, -77.0)]
+    store = TopologyStore(":memory:")
+    store.record_association(AP3, "testnet", WALL0 - 600, "windows")  # AP3 would win on score
+    radio, adapter, engine, tel, store, _ = build(aps, store=store)
+    _frozen_reading(adapter, -70.0)  # the reading is stuck; scans measure AP1 at -80
+    engine.probe = _probe_down_then_up(down_at=12.0, up_at=60.0)(radio.now)
+    ticks(engine, adapter, 25.0)
+    assert adapter.connect_calls == [("testnet", AP2)]  # +4 dB is enough on a dead link; strongest wins
+    assert "taking the strongest AP (needs +3 dB)" in kinds(tel, "decision")[0]["msg"]
+
+
+def test_a_live_link_still_needs_the_full_margin():
+    aps = [ScriptedAp(AP1, -78.0), ScriptedAp(AP2, -74.0)]  # below the threshold, but AP2 is only +4
+    radio, adapter, engine, tel, store, _ = build(aps)
+    ticks(engine, adapter, 20.0)
+    assert adapter.connect_calls == []
+    assert "needs +8" in kinds(tel, "no_candidate")[0]["msg"]

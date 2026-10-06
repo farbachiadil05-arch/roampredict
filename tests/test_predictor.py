@@ -156,3 +156,15 @@ def test_2g_aps_count_weaker_than_they_read(store):
     assert rank(off, [CandidateInput(B, "eduroam", -64.0, 1.0, 1, "2.4GHz")])[0].eligible
     with pytest.raises(ValueError):
         PredictorConfig(band_2g_penalty_db=-1)
+
+
+def test_margin_override_and_strongest_pick(store):
+    p = Predictor(store)
+    store.record_association(C, "eduroam", NOW - 600, "windows")  # C gets the "recently connected" bonus
+    ranked = rank(p, [cand(B, -73.0), cand(C, -74.0)], current_rssi=-77.0)
+    assert Predictor.best(ranked) is None  # +4 and +3 do not meet the usual +8
+    ranked = rank(p, [cand(B, -73.0), cand(C, -74.0)], current_rssi=-77.0, min_gain_db=3.0)
+    assert {r.bssid for r in ranked if r.eligible} == {B, C}
+    assert Predictor.best(ranked).bssid == C  # the score prefers the recently used AP...
+    assert Predictor.strongest(ranked).bssid == B  # ...the dead-link pick takes the strongest
+    assert Predictor.strongest([]) is None

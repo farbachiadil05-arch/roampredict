@@ -43,6 +43,7 @@ dhcp_renew = true                 # subnet changed -> ipconfig /renew (probably 
 wait_for_usual_next_ap = true     # wait for the AP you usually go to next while the link still holds
 probe_trigger = true              # with `run --probe`: internet not answering + weak signal = roam now
 probe_trigger_max_dbm = -65       # ...when the signal is at or below this
+dead_link_min_gain_db = 3         # on a dead link: take the strongest AP that beats it by this much
 
 [ranking]
 w_learned = 0.35                  # learned "usual next AP" probability

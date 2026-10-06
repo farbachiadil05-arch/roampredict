@@ -165,12 +165,15 @@ class Predictor:
         now: float,
         recently_left: Mapping[str, float] | None = None,
         deny: frozenset[str] = frozenset(),
+        min_gain_db: float | None = None,
     ) -> list[ScoreBreakdown]:
         """Score every visible AP of ``ssid``; eligible ones first, best first.
 
         ``now`` and the ``recently_left`` timestamps are wall-clock seconds.
+        ``min_gain_db`` overrides the configured margin (used for a dead link).
         """
         cfg = self.config
+        need = cfg.min_gain_db if min_gain_db is None else min_gain_db
         w = cfg.weights
         recently_left = recently_left or {}
 
@@ -209,9 +212,9 @@ class Predictor:
             reason = None
             if bssid in deny:
                 reason = "deny-listed"
-            elif gain < cfg.min_gain_db:
+            elif gain < need:
                 handicap = f" after the {cfg.band_2g_penalty_db:.0f} dB 2.4 GHz handicap" if rssi != c.rssi_dbm else ""
-                reason = f"only {gain:+.1f} dB vs current{handicap} (needs +{cfg.min_gain_db:.0f})"
+                reason = f"only {gain:+.1f} dB vs current{handicap} (needs +{need:.0f})"
             elif c.age_s is not None and c.age_s > cfg.max_candidate_age_s:
                 reason = f"last heard {c.age_s:.0f} s ago"
             elif (
@@ -249,3 +252,9 @@ class Predictor:
     @staticmethod
     def best(ranked: Sequence[ScoreBreakdown]) -> ScoreBreakdown | None:
         return ranked[0] if ranked and ranked[0].eligible else None
+
+    @staticmethod
+    def strongest(ranked: Sequence[ScoreBreakdown]) -> ScoreBreakdown | None:
+        """The eligible AP with the strongest signal (after the 2.4 GHz handicap), ignoring the score."""
+        eligible = [r for r in ranked if r.eligible]
+        return max(eligible, key=lambda r: r.gain_db) if eligible else None

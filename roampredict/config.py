@@ -122,6 +122,7 @@ SCHEMA: dict[str, dict[str, type]] = {
         "wait_for_usual_next_ap": bool,
         "probe_trigger": bool,
         "probe_trigger_max_dbm": float,
+        "dead_link_min_gain_db": float,
     },
     "ranking": {
         "w_learned": float,
@@ -245,7 +246,7 @@ def _build(data: dict[str, dict[str, Any]]) -> AppConfig:
             },
         )
     )
-    engine_kw = pick(roam, {"probe_trigger_max_dbm": "probe_trigger_max_dbm"})
+    engine_kw = pick(roam, {"probe_trigger_max_dbm": "probe_trigger_max_dbm", "dead_link_min_gain_db": "dead_link_min_gain_db"})
     if roam.get("probe_trigger") is False:
         engine_kw["probe_trigger_max_dbm"] = None
     engine = EngineConfig(
