@@ -22,6 +22,9 @@ Nothing is disconnected unless a better AP was verified first:
 5. Check which BSSID we actually ended up on.
 6. IP layer: same subnet and gateway -> flush the ARP cache (needs admin);
    changed -> renew DHCP (needs admin) and time it; then ping the gateway.
+   No working IP layer (e.g. DHCP never answered and Windows picked a
+   169.254.x address): hand the connection back to Windows with a plain
+   profile connection, so the laptop is not left offline on the AP we asked for.
 7. Reset RoamPredict's own sockets (other programs are not touched).
 """
 
@@ -326,11 +329,7 @@ class RoamExecutor:
             if self._wait_connected(cfg.fallback_wait_s):
                 out.fallback = "windows_autoconnect"
             else:
-                try:
-                    self.adapter.connect_profile(link.profile_name)
-                    out.fallback = "plain_profile_connect"
-                except WlanError as exc:
-                    out.fallback = f"plain_profile_connect_failed ({exc})"
+                out.fallback = self._hand_back(link.profile_name)
             now_link = self.adapter.link_status()
             out.final_bssid = now_link.bssid if now_link.connected else None
             return out
@@ -357,6 +356,11 @@ class RoamExecutor:
                 self.telemetry.emit("warning", f"socket reset failed: {exc}")
         if not l3_ok:
             out.reason = out.reason or "no reply from the gateway after the switch"
+            # Seen on campus: Wi-Fi connected in 1.6 s but DHCP never answered.
+            # Staying would leave the laptop offline on an AP requested by BSSID.
+            out.fallback = self._hand_back(link.profile_name)
+            now_link = self.adapter.link_status()
+            out.final_bssid = now_link.bssid if now_link.connected else None
             return out
         out.stage = "done"
         out.success = True
@@ -364,6 +368,18 @@ class RoamExecutor:
         return out
 
     # -- helpers -------------------------------------------------------------------------
+
+    def _hand_back(self, profile: str) -> str:
+        """Reconnect by profile name only, so Windows chooses the AP again.
+
+        This also ends the request for one BSSID, which some drivers would
+        otherwise keep honouring ("pinning", see the README).
+        """
+        try:
+            self.adapter.connect_profile(profile)
+        except WlanError as exc:
+            return f"plain_profile_connect_failed ({exc})"
+        return "plain_profile_connect"
 
     def _snapshot(self) -> L3Snapshot | None:
         try:

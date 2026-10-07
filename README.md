@@ -57,6 +57,7 @@ new access point has been checked on fresh scan data.
    -> safe switch: fresh data, >= 8 dB stronger, allow-listed, not rate-limited, kill switch off
    -> WlanConnect(saved profile NAME, one desired BSSID)
    -> check the BSSID we ended up on, ping the gateway, ARP flush or DHCP renew
+   -> no working IP address? hand back to Windows (reconnect by profile name only)
    -> measure every step and remember it (SQLite)
 ```
 
@@ -95,6 +96,9 @@ Honest list of what Windows allows and what this program cannot do.
   might keep you on that AP. While RoamPredict runs it handles later switches
   itself. When it exits, it prints a note if you are still on an AP it asked
   for. To release it, reconnect once: `netsh wlan connect name="eduroam"`.
+  If the new AP gives no working IP address (seen on campus: DHCP never
+  answered and Windows picked a 169.254.x address), RoamPredict does that
+  reconnect itself at once, so Windows chooses the AP again.
 * **On a network with 802.11r, Windows' own roaming may beat RoamPredict.**
   The simulator shows this (see below). Measure it on your campus with
   `roampredict report` before keeping active mode.
@@ -152,12 +156,15 @@ Honest list of what Windows allows and what this program cannot do.
 
 **About this code**
 
-* **Real hardware so far: one laptop (Intel AX201, Windows 10) on one campus
-  network.** Dry-run walks found and fixed several problems (nonsense RSSI
+* **Real hardware so far: two laptops (both Intel AX201, Windows 10 and 11) on
+  one campus network.** Dry-run walks found and fixed several problems (nonsense RSSI
   from the driver, blocked gateway ping, "scan already running", a crash on
   large error codes, a signal reading that freezes while the link is dead).
   The first active walk made 2 switches: 1 succeeded (connect 3.5 s, internet
   back 6.6 s after it died), 1 failed (reason 0x38001) and Windows took over.
+  On the second laptop, an active walk made 3 switches in 2 minutes before its
+  battery died: 2 succeeded, and after 1 the new AP never gave an IP address.
+  RoamPredict left the laptop on that AP; it now hands back to Windows instead.
   That is far too few switches to claim a general improvement. The
   Windows adapter is also tested against a stand-in for `wlanapi.dll` built
   from the same ctypes prototypes, and every structure's size and offsets are

@@ -177,6 +177,22 @@ def test_no_gateway_reply_is_a_failure_after_trying_dhcp():
     out = ex.switch(link=link(adapter), candidate=candidate(), verification=verified(ex, adapter))
     assert not out.success and out.stage == "l3"
     assert "gateway" in out.reason and "renew_dhcp" in net.calls
+    assert out.fallback == "plain_profile_connect"
+    assert adapter.profile_connects == ["testnet"]
+
+
+def test_no_ip_address_after_the_switch_hands_back_to_windows():
+    # Seen on campus: ping is blocked, no admin rights, and after the switch
+    # DHCP never answered, so Windows gave itself a 169.254.x address.
+    apipa = L3Snapshot(7, "Wi-Fi", "169.254.173.113", 16, None)
+    net = MockNetworkOps(admin=False, ping_ok=False, snapshots=[DEFAULT_L3, apipa])
+    _, adapter, net, ex = setup(net=net)
+    out = ex.switch(link=link(adapter), candidate=candidate(), verification=verified(ex, adapter))
+    assert not out.success and out.stage == "l3"
+    assert out.reason == "no gateway after the switch"
+    assert out.fallback == "plain_profile_connect"
+    assert adapter.profile_connects == ["testnet"]  # by name only: Windows chooses the AP again
+    assert link(adapter).connected and out.final_bssid == link(adapter).bssid
 
 
 def test_auth_reason_ranges():
