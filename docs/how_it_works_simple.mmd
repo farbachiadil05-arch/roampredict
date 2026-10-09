@@ -1,0 +1,45 @@
+flowchart TD
+    A(["Start: run --active --probe"]) --> B
+
+    B["1. Watch<br/>read the Wi-Fi signal<br/>4 times per second"] --> C
+    C["2. Clean<br/>ignore strange jumps,<br/>smooth the signal"] --> D
+    D["3. Predict<br/>is the signal falling?<br/>how many seconds left?"] --> E
+
+    E{"4. Link about<br/>to fail?"}
+    E -- "No" --> W
+    E -- "Yes" --> F
+
+    F["5. Choose<br/>score the other access points,<br/>pick the best one"] --> G
+    G{"6. Clearly<br/>better?<br/>+8 dB"}
+    G -- "No" --> W
+    G -- "Yes" --> H
+
+    H{"7. Safe to<br/>switch?"}
+    H -- "No" --> W
+    H -- "Yes" --> I
+    H -.- NOTE["Safe means: --active is on, network is allowed,<br/>kill switch is off, last switch was 20 s ago"]
+
+    W["Do nothing,<br/>keep watching"] --> B
+    I["8. Switch<br/>ask Windows to connect<br/>to the better access point"] --> J
+    J{"9. Internet OK?"}
+    J -- "Yes" --> K
+    J -- "No" --> L
+
+    K["Success<br/>wait 20 s before<br/>any new switch"] --> M
+    L["Give control back<br/>to Windows"] --> M
+
+    M[("10. Remember<br/>save every outage and switch<br/>in the database and log")] --> B
+
+    classDef step fill:#eef4ff,stroke:#3b6fd8,color:#111
+    classDef ask fill:#fff6e0,stroke:#d49a00,color:#111
+    classDef good fill:#e6f6ea,stroke:#2e8b47,color:#111
+    classDef bad fill:#fdecea,stroke:#c0392b,color:#111
+    classDef start fill:#ffffff,stroke:#555,color:#111
+    class B,C,D,F,I,M step
+    class E,G,H,J ask
+    class K good
+    class W start
+    class L bad
+    class A start
+    classDef note fill:#f7f7f7,stroke:#bbb,color:#444,stroke-dasharray:4 3
+    class NOTE note
