@@ -1,0 +1,80 @@
+flowchart TD
+    USER(["You: python -m roampredict run --active --probe www.google.com"]) --> CLI
+
+    subgraph L6["Interface - cli.py, config.py"]
+        CLI["cli.cmd_run<br/>load config.toml, build all parts"]
+    end
+
+    CLI --> LOOP
+
+    subgraph L5["Engine - engine.py, every 0.25 s"]
+        LOOP(("tick"))
+        LOOP --> EV["1 Read Windows events<br/>roam, disconnect, failure"]
+        EV --> NET["2 Read internet probe<br/>NET_DOWN / NET_UP"]
+        NET --> LINK{"3 Link up?"}
+        LINK -- "no" --> DOWN["Start Wi-Fi outage timer<br/>wait for Windows to reconnect"]
+        LINK -- "yes, other AP" --> WROAM["WINDOWS_ROAM<br/>learn the move, COOLDOWN 5 s"]
+        LINK -- "yes, same AP" --> FILT
+    end
+
+    subgraph L3["Decision core - pure logic"]
+        FILT["4 Filter - filter.py<br/>drop spikes over 6 dB, smooth EMA 1 s"]
+        FILT --> TREND["5 Trend - trend.py<br/>slope over 3 s, seconds to -75 dBm"]
+        TREND --> SM{"6 State machine<br/>state_machine.py"}
+        SM -- "STABLE" --> IDLE["do nothing"]
+        SM -- "DEGRADING" --> SCAN["7 Scan, at most every 6 s"]
+        SM -- "ROAM_IMMINENT<br/>below -75, falling fast,<br/>or internet dead under -65" --> RANK
+        RANK["8 Rank - predictor.py<br/>score = 0.35 learned + 0.35 signal<br/>+ 0.10 seen + 0.20 recent"]
+        RANK --> GAIN{"best AP at least +8 dB?<br/>+3 dB if internet dead"}
+        GAIN -- "no" --> NOC["NO_CANDIDATE"]
+        GAIN -- "yes" --> VER{"9 Verify - executor.py<br/>fresh scan, still strong?"}
+        VER -- "no" --> NOTV["NOT_VERIFIED"]
+    end
+
+    subgraph L4["Guarded action - safety.py, roam/executor.py"]
+        VER -- "yes" --> GATE{"Safety gate<br/>--active? kill switch off?<br/>SSID allow-listed? 20 s since last?"}
+        GATE -- "dry-run" --> WOULD["WOULD_SWITCH<br/>logs only"]
+        GATE -- "allowed" --> CONN["10 WlanConnect<br/>saved profile NAME + one BSSID<br/>password stays in Windows"]
+        CONN --> AUTH{"connected?"}
+        AUTH -- "802.1X failed" --> KILL["Stop + kill switch<br/>leave it to Windows"]
+        AUTH -- "other failure" --> BACK["Reconnect by profile name<br/>Windows chooses the AP"]
+        AUTH -- "yes" --> IP{"11 Got an IP address?"}
+        IP -- "no, 169.254.x" --> BACK
+        IP -- "yes" --> OK["SWITCH_RESULT OK<br/>COOLDOWN 20 s"]
+    end
+
+    subgraph L1["Windows - platform/windows_wlan.py via ctypes"]
+        DLL[("wlanapi.dll")]
+        CB["callback thread<br/>notifications"]
+        PROBE["probe thread<br/>TCP to google:443 every 0.25 s"]
+    end
+
+    subgraph L2["Memory and output"]
+        DB[("SQLite roampredict.db<br/>APs, moves, switches, outages")]
+        LOG["Screen lines + JSON log"]
+    end
+
+    DLL -.-> LINK
+    CB -.queue.-> EV
+    PROBE -.queue.-> NET
+    CONN -.-> DLL
+    SCAN -.-> DLL
+
+    WROAM --> DB
+    DOWN --> DB
+    OK --> DB
+    BACK --> DB
+    DB -.learned moves.-> RANK
+    DB --> REPORT["report --timeline<br/>compare with / without"]
+
+    IDLE --> LOOP
+    NOC --> LOOP
+    NOTV --> LOOP
+    WOULD --> LOOP
+    OK --> LOOP
+    LOOP -.every event.-> LOG
+
+    classDef act fill:#eaf2fe,stroke:#1f6feb,stroke-width:2px
+    classDef stop fill:#fdecea,stroke:#c0392b
+    class CONN,OK act
+    class KILL stop
