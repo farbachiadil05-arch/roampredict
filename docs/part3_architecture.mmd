@@ -1,0 +1,51 @@
+%%{init: {"flowchart": {"nodeSpacing": 45, "rankSpacing": 70, "curve": "basis", "padding": 18}}}%%
+flowchart LR
+    ENG["<b>Engine._switch</b><br/>engine.py<br/>the conductor"]
+
+    subgraph ACT["ACT · do the switch"]
+        direction TB
+        EX["<b>RoamExecutor</b><br/>roam/executor.py<br/>verify → connect →<br/>check IP → fallback"]
+        WL["<b>WindowsWlanAdapter</b><br/>windows_wlan.py<br/>WlanConnect(profile name, BSSID)"]
+        ST["<b>win32_structs.py</b><br/>C structures via ctypes"]
+        L3["<b>WindowsNetworkOps</b><br/>net/l3.py<br/>IP + gateway · ARP flush<br/>DHCP renew"]
+        EX --> WL --> ST
+        EX --> L3
+    end
+
+    subgraph GUARD["SAFETY · after the switch"]
+        direction TB
+        SG["<b>SafetyGate + KillSwitch</b><br/>safety.py<br/>2 failures or login problem → stop"]
+        SM["<b>RoamStateMachine</b><br/>ROAMING → COOLDOWN<br/>20 s ok · 60 s failed"]
+    end
+
+    subgraph MEM["REMEMBER · measure and record"]
+        direction TB
+        PR["<b>ConnectivityProbe</b><br/>net/probe.py + latency.py<br/>TCP google:443 every 0.25 s"]
+        DB[("<b>TopologyStore</b><br/>store.py → roampredict.db<br/>switches · outages · moves")]
+        LOG["<b>Telemetry</b><br/>telemetry.py → roampredict.jsonl<br/>passwords removed"]
+    end
+
+    WIN[("<b>Windows</b><br/>wlanapi.dll<br/>iphlpapi.dll")]
+
+    ENG -->|"1 switch()"| EX
+    ENG -->|"2 record_result()"| SG
+    ENG -->|"3 end_roam()"| SM
+    ENG -->|"4 record_switch()"| DB
+    ENG -->|"5 emit()"| LOG
+    PR -->|"outages"| ENG
+    WL --> WIN
+    L3 --> WIN
+
+    classDef core fill:#eaf2fe,stroke:#1f6feb,stroke-width:3px,color:#111,font-size:20px
+    classDef act fill:#e6f6ea,stroke:#2e8b47,stroke-width:2px,color:#111,font-size:18px
+    classDef safe fill:#fdecea,stroke:#c0392b,stroke-width:2px,color:#111,font-size:18px
+    classDef mem fill:#fff6e0,stroke:#d49a00,stroke-width:2px,color:#111,font-size:18px
+    classDef os fill:#f2f2f2,stroke:#555,stroke-width:2px,color:#111,font-size:18px
+    class ENG core
+    class EX,WL,ST,L3 act
+    class SG,SM safe
+    class PR,DB,LOG mem
+    class WIN os
+    style ACT fill:#fbfefb,stroke:#2e8b47
+    style GUARD fill:#fffafa,stroke:#c0392b
+    style MEM fill:#fffdf6,stroke:#d49a00
