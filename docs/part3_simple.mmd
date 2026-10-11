@@ -1,0 +1,19 @@
+%%{init: {"flowchart": {"nodeSpacing": 50, "rankSpacing": 60, "curve": "basis", "padding": 20}}}%%
+flowchart LR
+    A["<b>1. Switch</b><br/>executor.py<br/>ask Windows to connect"] --> B{"<b>2. Internet<br/>OK?</b><br/>l3.py"}
+    B -- "Yes" --> C["<b>Success</b><br/>pause 20 s"]
+    B -- "No" --> D["<b>Give back</b><br/>to Windows"]
+    C --> E[("<b>3. Remember</b><br/>store.py + telemetry.py<br/>database + log")]
+    D --> E
+    P["<b>Probe</b><br/>probe.py<br/>checks internet<br/>every 0.25 s"] -.-> E
+
+    classDef act fill:#eaf2fe,stroke:#1f6feb,stroke-width:2px,color:#111,font-size:22px
+    classDef ask fill:#fff6e0,stroke:#d49a00,stroke-width:2px,color:#111,font-size:22px
+    classDef good fill:#e6f6ea,stroke:#2e8b47,stroke-width:2px,color:#111,font-size:22px
+    classDef bad fill:#fdecea,stroke:#c0392b,stroke-width:2px,color:#111,font-size:22px
+    classDef mem fill:#f3ecff,stroke:#7a4fd0,stroke-width:2px,color:#111,font-size:22px
+    class A act
+    class B ask
+    class C good
+    class D bad
+    class E,P mem
